@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/horst-lang.iml" filepath="$PROJECT_DIR$/horst-lang.iml" />
+      <module fileurl="file://$PROJECT_DIR$/horst.iml" filepath="$PROJECT_DIR$/horst.iml" />
     </modules>
   </component>
 </project>
