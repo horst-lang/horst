@@ -105,4 +105,5 @@ pub enum Instruction {
     GetLocal(usize),
     SetLocal(usize),
     Print,
+    Halt,
 }

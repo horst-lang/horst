@@ -230,7 +230,9 @@ impl VM {
 
                     println!("{}", value);
                 },
-
+                Instruction::Halt => {
+                    return Value::Nil;
+                },
             }
         }
 

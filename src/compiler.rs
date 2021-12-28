@@ -37,8 +37,7 @@ impl Compiler {
             instructions.extend(self.declaration());
         }
 
-        instructions.push(Instruction::Nil);
-        instructions.push(Instruction::Return);
+        instructions.push(Instruction::Halt);
 
         Program {
             instructions,
@@ -609,6 +608,7 @@ mod tests {
             instructions: vec![
                 Instruction::Constant(0),
                 Instruction::DefineGlobal(0),
+                Instruction::Halt,
             ],
             constants: vec![
                 Value::Number(5.0),
@@ -626,6 +626,7 @@ mod tests {
                 Instruction::DefineGlobal(0),
                 Instruction::Constant(1),
                 Instruction::DefineGlobal(1),
+                Instruction::Halt,
             ],
             constants: vec![
                 Value::Number(5.0),
