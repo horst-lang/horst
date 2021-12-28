@@ -1,3 +1,12 @@
+mod token;
+pub mod scanner;
+pub mod compiler;
+mod instruction;
+pub mod value;
+mod function;
+mod frame;
+pub mod vm;
+
 #[cfg(test)]
 mod tests {
     #[test]
