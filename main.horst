@@ -1,5 +1,151 @@
-let i = 0;
-while (i < 10000000) {
-    i = i + 1;
+// TicTacToe written in Horst
+//
+// by NinoDS
+
+let f1 = 0;
+let f2 = 0;
+let f3 = 0;
+let f4 = 0;
+let f5 = 0;
+let f6 = 0;
+let f7 = 0;
+let f8 = 0;
+let f9 = 0;
+
+fn printBoard() {
+    print "\n";
+    print " " + displayField(f1) + " | " + displayField(f2) + " | " + displayField(f3);
+    print "---+---+---";
+    print " " + displayField(f4) + " | " + displayField(f5) + " | " + displayField(f6);
+    print "---+---+---";
+    print " " + displayField(f7) + " | " + displayField(f8) + " | " + displayField(f9);
 }
-print i;
+
+fn displayField(field) {
+    if (field == 1) {
+        return "X";
+    } else {
+        if (field == 2) {
+            return "O";
+        } else {
+            return " ";
+        }
+    }
+}
+
+fn setInput(player) {
+    let input = readln();
+
+    if (input == "1") {
+        f1 = player;
+    } else {
+        if (input == "2") {
+            f2 = player;
+        } else {
+            if (input == "3") {
+                f3 = player;
+            } else {
+                if (input == "4") {
+                    f4 = player;
+                } else {
+                    if (input == "5") {
+                        f5 = player;
+                    } else {
+                        if (input == "6") {
+                            f6 = player;
+                        } else {
+                            if (input == "7") {
+                                f7 = player;
+                            } else {
+                                if (input == "8") {
+                                    f8 = player;
+                                } else {
+                                    if (input == "9") {
+                                        f9 = player;
+                                    } else {
+                                        print "Invalid input: " + input;
+                                        setInput(player);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn checkWin() {
+    if (f1 == f2 and f2 == f3 and f1 != 0) {
+        print "Player " + displayField(f1) + " wins!";
+        return true;
+    } else {
+        if (f4 == f5 and f5 == f6 and f4 != 0) {
+            print "Player " + displayField(f4) + " wins!";
+            return true;
+        } else {
+            if (f7 == f8 and f8 == f9 and f7 != 0) {
+                print "Player " + displayField(f7) + " wins!";
+                return true;
+            } else {
+                if (f1 == f4 and f4 == f7 and f1 != 0) {
+                    print "Player " + displayField(f1) + " wins!";
+                    return true;
+                } else {
+                    if (f2 == f5 and f5 == f8 and f2 != 0) {
+                        print "Player " + displayField(f2) + " wins!";
+                        return true;
+                    } else {
+                        if (f3 == f6 and f6 == f9 and f3 != 0) {
+                            print "Player " + displayField(f3) + " wins!";
+                            return true;
+                        } else {
+                            if (f1 == f5 and f5 == f9 and f1 != 0) {
+                                print "Player " + displayField(f1) + " wins!";
+                                return true;
+                            } else {
+                                if (f3 == f5 and f5 == f7 and f3 != 0) {
+                                    print "Player " + displayField(f3) + " wins!";
+                                    return true;
+                                } else {
+                                    if (f1 != 0 and f2 != 0 and f3 != 0 and f4 != 0 and f5 != 0 and f6 != 0 and f7 != 0 and f8 != 0 and f9 != 0) {
+                                        print "Draw!";
+                                        return true;
+                                    } else {
+                                        return false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+print "Welcome to Tic Tac Toe!";
+print "Choose the field by using the number keys.";
+print " 1 | 2 | 3";
+print "---+---+---";
+print " 4 | 5 | 6";
+print "---+---+---";
+print " 7 | 8 | 9";
+print "";
+print "Player 1 (X) goes first.";
+
+while (true) {
+    print "Player 1, please enter your move: ";
+    setInput(1);
+    printBoard();
+    if (checkWin()) {
+        return "game over";
+    }
+    print "Player 2, please enter your move: ";
+    setInput(2);
+    printBoard();
+    if (checkWin()) {
+        return "Game over";
+    }
+}

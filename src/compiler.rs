@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use crate::function::Function;
 use crate::instruction::Instruction;
+use crate::native_functions::NATIVE_FUNCTIONS;
 use crate::token::Token;
 use crate::value::Value;
 
@@ -169,6 +170,12 @@ impl Compiler {
     }
 
     fn add_constant(&mut self, value: Value) -> usize {
+        for (index, constant) in self.constants.iter().enumerate() {
+            if *constant == value {
+                return index;
+            }
+        }
+
         self.constants.push(value);
         self.constants.len() - 1
     }
@@ -470,7 +477,11 @@ impl Compiler {
                 self.advance();
             },
             Token::Identifier(name) => {
-                instructions.push(self.get_variable(name));
+                if NATIVE_FUNCTIONS.contains_key(&name) {
+                    instructions.extend(self.get_native(&name));
+                } else {
+                    instructions.push(self.get_variable(&name));
+                }
                 self.advance();
             },
             Token::LeftParen => {
@@ -490,16 +501,25 @@ impl Compiler {
         instructions
     }
 
-    fn get_variable(&mut self, name: String) -> Instruction {
-        let local_index = self.get_local_index(&name);
+    fn get_native(&mut self, name: &str) -> Vec<Instruction> {
+        let mut instructions = vec![];
+
+        let index = self.add_constant(Value::Native(NATIVE_FUNCTIONS[name].clone()));
+        instructions.push(Instruction::Constant(index));
+
+        instructions
+    }
+
+    fn get_variable(&mut self, name: &str) -> Instruction {
+        let local_index = self.get_local_index(name);
         return if let Some(local_index) = local_index {
             Instruction::GetLocal(local_index)
         } else {
-            if !self.globals.contains_key(&name) {
+            if !self.globals.contains_key(name) {
                 self.globals.insert(name.to_string(), self.global_count());
             }
 
-            let index = self.globals.get(&name).unwrap();
+            let index = self.globals.get(name).unwrap();
             Instruction::GetGlobal(*index)
         }
     }

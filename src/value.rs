@@ -1,7 +1,7 @@
 use std::fmt;
 use crate::function::{Function, NativeFunction};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum Value {
     Number(f64),
     String(String),
@@ -13,17 +13,11 @@ pub enum Value {
 
 impl Value {
     pub fn is_falsey(&self) -> bool {
-        match self {
-            Value::Nil | Value::Boolean(false) => true,
-            _ => false,
-        }
+        matches!(self, Value::Nil | Value::Boolean(false))
     }
 
     pub fn is_truthy(&self) -> bool {
-        match self {
-            Value::Nil | Value::Boolean(false) => false,
-            _ => true,
-        }
+        !matches!(self, Value::Nil | Value::Boolean(false))
     }
 }
 

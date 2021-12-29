@@ -6,6 +6,7 @@ pub mod value;
 mod function;
 mod frame;
 pub mod vm;
+mod native_functions;
 
 #[cfg(test)]
 mod tests {

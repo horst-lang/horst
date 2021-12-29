@@ -22,6 +22,8 @@ fn main() {
     let mut compiler = Compiler::new(scanner.tokens);
     let program = compiler.compile();
 
+    // println!("{:?}", program);
+
     let mut vm = VM::new(program);
     let result = vm.run();
 

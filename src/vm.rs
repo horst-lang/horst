@@ -101,10 +101,16 @@ impl VM {
                     }
                 }
                 Instruction::Equal => {
-                    binary_op!(==, Boolean);
+                    let b = self.pop();
+                    let a = self.pop();
+
+                    self.push(Value::Boolean(a == b));
                 }
                 Instruction::NotEqual => {
-                    binary_op!(!=, Boolean);
+                    let b = self.pop();
+                    let a = self.pop();
+
+                    self.push(Value::Boolean(a != b));
                 }
                 Instruction::Greater => {
                     binary_op!(>, Boolean);
@@ -180,6 +186,14 @@ impl VM {
                             base_pointer,
                             ip: 0,
                         });
+                    } else if let Value::Native(function) = function {
+                        let mut args = Vec::with_capacity(arg_count);
+                        for _ in 0..arg_count {
+                            args.push(self.pop());
+                        }
+                        self.pop();
+                        let result = (function.function)(args);
+                        self.push(result);
                     } else {
                         panic!("Cannot call non-function. Got {}.", function);
                     }
