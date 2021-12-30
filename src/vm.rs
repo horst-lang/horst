@@ -146,14 +146,14 @@ impl VM {
                     if let Some(value) = value {
                         self.push(value);
                     } else {
-                        panic!("Undefined global. Index: {}", index);
+                        panic!("Undefined variable.");
                     }
                 },
                 Instruction::SetGlobal(index) => {
                     let value = self.peek(1);
 
                     if self.globals[index].is_none() {
-                        panic!("Undefined global.");
+                        panic!("Undefined variable.");
                     } else {
                         self.globals[index] = Some(value);
                     }

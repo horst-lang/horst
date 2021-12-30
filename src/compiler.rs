@@ -18,6 +18,7 @@ pub struct Compiler {
     constants: Vec<Value>,
     globals: HashMap<String, usize>,
     scopes: Vec<HashMap<String, usize>>,
+    in_function: bool,
 }
 
 impl Compiler {
@@ -28,6 +29,7 @@ impl Compiler {
             constants: vec![],
             globals: HashMap::new(),
             scopes: vec![HashMap::new()],
+            in_function: false,
         }
     }
 
@@ -102,6 +104,7 @@ impl Compiler {
     }
 
     fn function(&mut self) -> Vec<Instruction> {
+        self.in_function = true;
         self.begin_scope();
         self.consume_token(Token::LeftParen, "Expect '(' after function name.");
 
@@ -137,6 +140,8 @@ impl Compiler {
             body,
             parameters.len(),
         )));
+
+        self.in_function = false;
 
         vec![Instruction::Constant(index)]
     }
@@ -538,6 +543,10 @@ impl Compiler {
     }
 
     fn get_local_index(&mut self, name: &str) -> Option<usize> {
+        if self.in_function {
+            return self.scopes.last().unwrap().get(name).copied()
+        }
+
         for scope in &self.scopes {
             if scope.contains_key(name) {
                 return Some(scope[name]);
