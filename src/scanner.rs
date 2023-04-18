@@ -40,6 +40,7 @@ impl Scanner {
             '+' => self.add_token(Token::Plus),
             ';' => self.add_token(Token::Semicolon),
             '*' => self.add_token(Token::Star),
+            '.' => self.add_token(Token::Dot),
             '!' => self.match_token('=', Token::BangEqual, Token::Bang),
             '=' => self.match_token('=', Token::EqualEqual, Token::Equal),
             '>' => self.match_token('=', Token::GreaterEqual, Token::Greater),
@@ -119,6 +120,7 @@ impl Scanner {
         let value = &self.source[self.start..self.current];
         let token = match value {
             "and" => Token::And,
+            "class" => Token::Class,
             "else" => Token::Else,
             "false" => Token::False,
             "fn" => Token::Fn,
@@ -128,6 +130,8 @@ impl Scanner {
             "or" => Token::Or,
             "print" => Token::Print,
             "return" => Token::Return,
+            "super" => Token::Super,
+            "this" => Token::This,
             "true" => Token::True,
             "while" => Token::While,
             _ => Token::Identifier(value.to_string()),

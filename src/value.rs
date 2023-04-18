@@ -1,5 +1,7 @@
 use std::fmt;
+use crate::class::Class;
 use crate::function::{Function, NativeFunction};
+use crate::instance::Instance;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Value {
@@ -9,6 +11,8 @@ pub enum Value {
     Nil,
     Function(Function),
     Native(NativeFunction),
+    Class(Class),
+    Instance(usize),
 }
 
 impl Value {
@@ -30,6 +34,8 @@ impl fmt::Display for Value {
             Value::Nil => write!(f, "nil"),
             Value::Function(_) => write!(f, "<function>"),
             Value::Native(_) => write!(f, "<native fn>"),
+            Value::Class(c) => write!(f, "class {}", c.name),
+            Value::Instance(i) => write!(f, "<class instance #{}>", i),
         }
     }
 }

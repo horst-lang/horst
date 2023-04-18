@@ -1,9 +1,17 @@
 use std::collections::HashMap;
+use crate::class::Class;
 use crate::function::Function;
 use crate::instruction::Instruction;
-use crate::native_functions::NATIVE_FUNCTIONS;
+use crate::native_functions::{NATIVE_FUNCTIONS, NATIVE_CLASSES};
 use crate::token::Token;
 use crate::value::Value;
+
+#[derive(PartialEq)]
+enum FunctionKind {
+    Function,
+    Method,
+    Anonymous,
+}
 
 #[derive(Debug, PartialEq)]
 pub struct Program {
@@ -19,6 +27,7 @@ pub struct Compiler {
     globals: HashMap<String, usize>,
     scopes: Vec<HashMap<String, usize>>,
     in_function: bool,
+    current_super: Option<Instruction>,
 }
 
 impl Compiler {
@@ -30,6 +39,7 @@ impl Compiler {
             globals: HashMap::new(),
             scopes: vec![HashMap::new()],
             in_function: false,
+            current_super: None,
         }
     }
 
@@ -54,6 +64,8 @@ impl Compiler {
             self.let_declaration()
         } else if self.match_token(Token::Fn) {
             self.function_declaration()
+        } else if self.match_token(Token::Class) {
+            self.class_declaration()
         } else {
             self.statement()
         }
@@ -99,16 +111,19 @@ impl Compiler {
 
     fn function_declaration(&mut self) -> Vec<Instruction> {
         let name = self.consume_identifier("Expect function name.");
-        let function = self.function();
+        let function = self.function(FunctionKind::Function);
         self.define_global(name, function)
     }
 
-    fn function(&mut self) -> Vec<Instruction> {
+    fn function(&mut self, kind: FunctionKind) -> Vec<Instruction> {
         self.in_function = true;
         self.begin_scope();
         self.consume_token(Token::LeftParen, "Expect '(' after function name.");
 
         let mut parameters = vec![];
+        if kind == FunctionKind::Method {
+            self.define_local("this".to_string(), vec![]);
+        }
 
         if !self.check(&Token::RightParen) {
             loop {
@@ -183,6 +198,52 @@ impl Compiler {
 
         self.constants.push(value);
         self.constants.len() - 1
+    }
+
+    fn class_declaration(&mut self) -> Vec<Instruction> {
+        let name = self.consume_identifier("Expect class name.");
+        let superclass = if self.match_token(Token::Less) {
+            let name = self.consume_identifier("Expect superclass name.");
+            Some(self.get_variable(&name))
+        } else {
+            None
+        };
+        self.current_super = superclass.clone();
+
+        self.consume_token(Token::LeftBrace, "Expect '{' before class body.");
+
+        let mut methods = HashMap::new();
+
+        while !self.check(&Token::RightBrace) && !self.is_at_end() {
+            let name = self.consume_identifier("Expect function name.");
+            let function = self.function(FunctionKind::Method);
+            let function = self.remove_constant(function[0]);
+            if let Value::Function(function) = function {
+                methods.insert(name, function);
+            } else {
+                panic!("Expected function.");
+            }
+        }
+        self.current_super = None;
+
+        self.consume_token(Token::RightBrace, "Expect '}' after class body.");
+
+        let index = self.add_constant(Value::Class(Class::new(name.clone(), methods)));
+
+        let mut instructions = vec![Instruction::Constant(index)];
+        if let Some(superclass) = superclass {
+            instructions.push(superclass);
+            instructions.push(Instruction::Inherit);
+        }
+
+        self.define_global(name, instructions)
+    }
+
+    fn remove_constant(&mut self, instruction: Instruction) -> Value {
+        match instruction {
+            Instruction::Constant(index) => self.constants.remove(index),
+            _ => panic!("Expected constant instruction."),
+        }
     }
 
     fn statement(&mut self) -> Vec<Instruction> {
@@ -299,15 +360,31 @@ impl Compiler {
     }
 
     fn assignment(&mut self) -> Vec<Instruction> {
-        if self.peek_next() != &Token::Equal {
-            return self.or();
+        let mut instructions = self.or();
+
+        if self.match_token(Token::Equal) {
+            let value = self.assignment();
+
+            if let Some(name) = instructions.pop() {
+                if let Instruction::GetGlobal(index) = name {
+                    instructions.extend(value);
+                    instructions.push(Instruction::SetGlobal(index));
+                } else if let Instruction::GetLocal(index) = name {
+                    instructions.extend(value);
+                    instructions.push(Instruction::SetLocal(index));
+                } else if let Instruction::GetProperty(index) = name {
+                    instructions.extend(value);
+                    instructions.push(Instruction::SetProperty(index));
+                } else {
+                    panic!("Invalid assignment target.");
+                }
+            } else {
+                panic!("Invalid assignment target.");
+            }
+
         }
 
-        let name = self.consume_identifier("Expect variable name.");
-        self.consume_token(Token::Equal, "Expect '=' after variable name.");
-        let mut value = self.expression();
-        value.push(self.set_variable(name));
-        value
+        instructions
     }
 
     fn or(&mut self) -> Vec<Instruction> {
@@ -427,8 +504,12 @@ impl Compiler {
 
         instructions.extend(self.primary());
 
-        while self.check(&Token::LeftParen) {
-            instructions.extend(self.finish_call());
+        loop {
+            match self.peek().clone() {
+                Token::LeftParen => instructions.extend(self.finish_call()),
+                Token::Dot => instructions.extend(self.finish_get(instructions.clone())),
+                _ => break,
+            }
         }
 
         instructions
@@ -451,6 +532,27 @@ impl Compiler {
         }
 
         instructions.push(Instruction::Call(arguments));
+
+        instructions
+    }
+
+    fn finish_get(&mut self, vec1: Vec<Instruction>) -> Vec<Instruction> {
+        let mut instructions = vec![];
+
+        self.consume_token(Token::Dot, "Expect '.' after object.");
+        let name = self.consume_identifier("Expect property name after '.'.");
+        let index = self.add_constant(Value::String(name.clone()));
+        if self.peek() == &Token::LeftParen {
+            let mut call = self.finish_call();
+            if let Some(Instruction::Call(arguments)) = call.pop() {
+                instructions.push(Instruction::GetProperty(index));
+                instructions.extend(vec1);
+                instructions.extend(call);
+                instructions.push(Instruction::Call(arguments + 1));
+            }
+        } else {
+            instructions.push(Instruction::GetProperty(index));
+        }
 
         instructions
     }
@@ -482,11 +584,7 @@ impl Compiler {
                 self.advance();
             },
             Token::Identifier(name) => {
-                if NATIVE_FUNCTIONS.contains_key(&name) {
-                    instructions.extend(self.get_native(&name));
-                } else {
-                    instructions.push(self.get_variable(&name));
-                }
+                instructions.push(self.get_variable(&name));
                 self.advance();
             },
             Token::LeftParen => {
@@ -496,7 +594,30 @@ impl Compiler {
             },
             Token::Fn => {
                 self.advance();
-                instructions.extend(self.function());
+                instructions.extend(self.function(FunctionKind::Anonymous));
+            },
+            Token::Super => {
+                if let Some(superclass) = self.current_super {
+                    self.advance();
+                    self.consume_token(Token::Dot, "Expect '.' after 'super'.");
+                    let method = self.consume_identifier("Expect superclass method name.");
+                    let index = self.add_constant(Value::String(method));
+                    let mut call = self.finish_call();
+                    if let Some(Instruction::Call(arguments)) = call.pop() {
+                        instructions.push(superclass);
+                        instructions.push(Instruction::GetSuper(index));
+                        instructions.push(Instruction::GetLocal(0));
+                        instructions.extend(call);
+                        instructions.push(Instruction::Call(arguments + 1));
+                    }
+
+                } else {
+                    panic!("No superclass defined.");
+                }
+            },
+            Token::This => {
+                instructions.push(Instruction::GetLocal(0));
+                self.advance();
             },
             _ => {
                 panic!("Expected expression, got {:?}", self.peek());
@@ -506,26 +627,33 @@ impl Compiler {
         instructions
     }
 
-    fn get_native(&mut self, name: &str) -> Vec<Instruction> {
-        let mut instructions = vec![];
-
+    fn get_native(&mut self, name: &str) -> Instruction {
         let index = self.add_constant(Value::Native(NATIVE_FUNCTIONS[name].clone()));
-        instructions.push(Instruction::Constant(index));
+        Instruction::Constant(index)
+    }
 
-        instructions
+    fn get_native_class(&mut self, name: &str) -> Instruction {
+let index = self.add_constant(Value::Class(NATIVE_CLASSES[name].clone()));
+        Instruction::Constant(index)
     }
 
     fn get_variable(&mut self, name: &str) -> Instruction {
-        let local_index = self.get_local_index(name);
-        return if let Some(local_index) = local_index {
-            Instruction::GetLocal(local_index)
-        } else {
-            if !self.globals.contains_key(name) {
-                self.globals.insert(name.to_string(), self.global_count());
-            }
+        if NATIVE_FUNCTIONS.contains_key(name) {
+            self.get_native(&name)
+        } else if NATIVE_CLASSES.contains_key(name) {
+            self.get_native_class(&name)
+        } else  {
+            let local_index = self.get_local_index(name);
+            return if let Some(local_index) = local_index {
+                Instruction::GetLocal(local_index)
+            } else {
+                if !self.globals.contains_key(name) {
+                    self.globals.insert(name.to_string(), self.global_count());
+                }
 
-            let index = self.globals.get(name).unwrap();
-            Instruction::GetGlobal(*index)
+                let index = self.globals.get(name).unwrap();
+                Instruction::GetGlobal(*index)
+            }
         }
     }
 

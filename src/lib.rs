@@ -6,7 +6,9 @@ pub mod value;
 mod function;
 mod frame;
 pub mod vm;
-mod native_functions;
+pub mod native_functions;
+mod class;
+mod instance;
 
 #[cfg(test)]
 mod tests {

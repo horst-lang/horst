@@ -1,5 +1,3 @@
-
-
 use horst::{
     scanner::{Scanner},
     compiler::{Compiler},
@@ -18,14 +16,14 @@ fn main() {
 
     let mut scanner = Scanner::new(contents);
     scanner.scan_tokens();
-
     let mut compiler = Compiler::new(scanner.tokens);
     let program = compiler.compile();
-
-    // println!("{:?}", program);
 
     let mut vm = VM::new(program);
     let result = vm.run();
 
     println!("Program exited with {}", result);
+
+
+
 }
