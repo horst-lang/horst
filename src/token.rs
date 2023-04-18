@@ -11,6 +11,7 @@ pub enum Token {
     Semicolon,              // ";"
     Slash,                  // "/"
     Star,                   // "*"
+    Dot,                    // "."
 
     // One or two character tokens
     Bang,                   // "!"
@@ -29,6 +30,7 @@ pub enum Token {
 
     // Keywords
     And,                    // "and"
+    Class,                  // "class"
     Else,                   // "else"
     False,                  // "false"
     Fn,                     // "fn"
@@ -38,6 +40,8 @@ pub enum Token {
     Or,                     // "or"
     Print,                  // "print"
     Return,                 // "return"
+    Super,                  // "super"
+    This,                   // "this"
     True,                   // "true"
     While,                  // "while"
 

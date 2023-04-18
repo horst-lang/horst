@@ -1,14 +1,24 @@
+use std::collections::HashMap;
+use crate::class::Class;
 use crate::compiler::Program;
 use crate::frame::CallFrame;
 use crate::function::Function;
+use crate::instance::Instance;
 use crate::instruction::Instruction;
 use crate::value::Value;
+use core::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+type Heap = HashMap<usize, Instance>;
 
 pub struct VM {
-    call_stack: Vec<CallFrame>,
+    pub(crate) call_stack: Vec<CallFrame>,
     stack: Vec<Value>,
     globals: Vec<Option<Value>>,
     constants: Vec<Value>,
+    heap: Heap,
+    next_id: usize,
 }
 
 impl VM {
@@ -27,6 +37,8 @@ impl VM {
             stack: vec![],
             globals: vec![],
             constants: program.constants,
+            heap: HashMap::new(),
+            next_id: 0,
         };
 
         vm.globals.resize(program.global_count, None);
@@ -173,13 +185,39 @@ impl VM {
 
                     self.stack[frame.base_pointer + index] = value;
                 },
+                Instruction::GetProperty(index) => {
+                    let name = self.constants[index].clone();
+                    let instance = self.pop();
+
+                    if let (Value::Instance(instance), Value::String(name)) = (instance, name) {
+                        let instance = self.get_instance(instance).unwrap();
+                        if let Some(value) = instance.fields.get(&name) {
+                            self.push(value.clone());
+                        } else {
+                            let method = self.get_method(instance, name);
+                            self.push(method);
+                        }
+                    } else {
+                        panic!("Cannot get property of non-object.");
+                    }
+                },
+                Instruction::SetProperty(index) => {
+                    let name = self.constants[index].clone();
+                    let value = self.pop();
+                    let instance = self.peek(1);
+
+                    if let (Value::Instance(instance), Value::String(name)) = (instance, name) {
+                        let instance = self.get_instance_mut(instance).unwrap();
+                        instance.fields.insert(name, value);
+                    } else {
+                        panic!("Cannot set property of non-object.");
+                    }
+                },
                 Instruction::Call(arg_count) => {
                     let function = self.peek(arg_count + 1);
 
                     if let Value::Function(function) = function {
                         let base_pointer = self.stack.len() - arg_count;
-
-                        assert_eq!(arg_count, function.arity, "Invalid arity for function call. Expected {}, got {}.", function.arity, arg_count);
 
                         self.call_stack.push(CallFrame {
                             function,
@@ -192,23 +230,79 @@ impl VM {
                             args.push(self.pop());
                         }
                         self.pop();
-                        let result = (function.function)(args);
+                        let result = (function.function)(args, self);
                         self.push(result);
+                    } else if let Value::Class(class) = function {
+                        let value = self.new_instance(Instance::new(class.clone()));
+                        let l = self.stack.len();
+                        self.stack[l - arg_count - 1] = value.clone();
+                        if let Some(Value::Function(init)) = class.methods.get("init") {
+                            self.push(value);
+                            self.call_stack.push(CallFrame {
+                                function: init.clone(),
+                                base_pointer: self.stack.len() - arg_count - 1,
+                                ip: 0,
+                            });
+                        } else if arg_count != 0 {
+                            panic!("Expected 0 arguments, got {}.", arg_count);
+                        }
                     } else {
-                        panic!("Cannot call non-function. Got {}.", function);
+                        panic!("Cannot call non-function.");
                     }
                 },
                 Instruction::Return => {
                     let return_value = self.pop();
                     let call_frame = self.call_stack.pop().unwrap();
                     self.stack.truncate(call_frame.base_pointer);
-
                     if !self.call_stack.is_empty() {
                         let function = self.pop();
-                        assert_eq!(function, Value::Function(call_frame.function), "Return value does not match function.");
-                        self.push(return_value);
+                        if let Value::Function(function) = function {
+                            self.push(return_value);
+                        } else if let Value::Instance(instance) = function {
+                            self.push(Value::Instance(instance));
+                        } else {
+                            panic!("Cannot return from non-function.");
+                        }
+
                     } else {
                         return return_value;
+                    }
+                },
+                Instruction::Invoke(arg_count) => {
+                    let name = self.pop();
+                    let instance = self.pop();
+
+                    if let (Value::String(name), Value::Instance(i)) = (name, instance) {
+                        let instance = self.get_instance(i).unwrap();
+                        let method = if let Value::Function(method) = self.get_method(instance, name) {
+                            method
+                        } else {
+                            panic!("Undefined method.");
+                        };
+                        self.push(Value::Function(method.clone()));
+                        self.push(Value::Instance(i));
+                        self.call_stack.push(CallFrame {
+                            function: method,
+                            base_pointer: self.stack.len() - arg_count - 1,
+                            ip: 0,
+                        });
+                    } else {
+                        panic!("Cannot invoke non-method.");
+                    }
+                },
+                Instruction::GetSuper(index) => {
+                    let name = self.constants[index].clone();
+                    let superclass = self.pop();
+
+                    if let (Value::String(name), Value::Class(superclass)) = (name, superclass) {
+                        let method = if let Some(Value::Function(method)) = superclass.methods.get(&name) {
+                            method.clone()
+                        } else {
+                            panic!("Undefined method '{}'.", name);
+                        };
+                        self.push(Value::Function(method.clone()));
+                    } else {
+                        panic!("Cannot get super of non-class.");
                     }
                 },
                 Instruction::False => {
@@ -241,11 +335,23 @@ impl VM {
                 },
                 Instruction::Print => {
                     let value = self.pop();
-
                     println!("{}", value);
                 },
                 Instruction::Halt => {
                     return Value::Nil;
+                },
+                Instruction::Inherit => {
+                    let subclass = self.pop();
+                    let superclass = self.pop();
+
+                    if let (Value::Class(superclass), Value::Class(mut subclass)) = (superclass, subclass) {
+                        for method in superclass.methods {
+                            subclass.methods.insert(method.0, method.1);
+                        }
+                        self.push(Value::Class(subclass));
+                    } else {
+                        panic!("Cannot inherit from non-class.");
+                    }
                 },
             }
         }
@@ -262,5 +368,173 @@ impl VM {
 
     fn push(&mut self, value: Value) {
         self.stack.push(value);
+    }
+
+    fn get_method(&self, instance: &Instance, name: String) -> Value {
+        dbg!(instance.class.methods.clone());
+        if let Some(value) = instance.class.methods.get(&name) {
+            return value.clone();
+        } else {
+            panic!("Undefined property {}.", name);
+        }
+    }
+
+    pub fn mark_and_sweep(&mut self) {
+        // Step 1: Mark
+        let mut marked = vec![];
+        for value in self.stack.clone() {
+            if let Value::Instance(id) = value {
+                marked.push(id);
+            }
+        }
+        let mut swap = marked.clone();
+        let mut current = vec![];
+        loop {
+            for a in &swap {
+                if let Some(instance) = self.heap.get(a) {
+                    for (_, value) in &instance.fields {
+                        if let Value::Instance(id) = value {
+                            if !marked.contains(id) {
+                                current.push(*id);
+                            }
+                        }
+                    }
+                }
+            }
+            if !current.is_empty() {
+                marked.append(&mut current);
+                swap = current.clone();
+                current.clear();
+            } else {
+                break;
+            }
+        }
+
+
+        // Step 2: Sweep
+        self.heap.retain(|id, _| marked.contains(id));
+    }
+
+    pub fn new_instance(&mut self, instance: Instance) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.heap.insert(id, instance);
+        Value::Instance(id)
+    }
+
+    pub fn get_instance(&self, id: usize) -> Option<&Instance> {
+        match self.heap.get(&id) {
+            Some(collectable) => Some(collectable),
+            None => None,
+        }
+    }
+
+    pub(crate) fn get_instance_mut(&mut self, id: usize) -> Option<&mut Instance> {
+        match self.heap.get_mut(&id) {
+            Some(collectable) => Some(collectable),
+            None => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use crate::class::Class;
+    use super::*;
+
+    #[test]
+    fn test_program_with_instance() {
+        let mut class = Class::new("TestClass".to_string(), HashMap::new());
+        let init_instructions = vec![
+            Instruction::GetLocal(0),
+            Instruction::Constant(0),
+            Instruction::SetProperty(0),
+            Instruction::Nil,
+            Instruction::Return,
+        ];
+        class.methods.insert("init".to_string(), Function::new(init_instructions, 0));
+
+        let constants = vec![
+            Value::String("foo".to_string()),
+            Value::Class(class),
+        ];
+        let program_instructions = vec![
+            Instruction::Constant(1),
+            Instruction::Call(0),
+            Instruction::GetProperty(0),
+            Instruction::Return,
+        ];
+
+        let program = Program {
+            instructions: program_instructions,
+            constants,
+            global_count: 0,
+        };
+
+
+        let mut vm = VM::new(program);
+        let result = vm.run();
+
+        assert_eq!(result, Value::String("foo".to_string()));
+    }
+
+    fn mark_and_sweep(stack: Vec<Value>, mut heap: HashMap<usize, Instance>) -> HashMap<usize, Instance> {
+        // Step 1: Mark
+        let mut marked = vec![];
+        for value in stack {
+            if let Value::Instance(id) = value {
+                marked.push(id);
+            }
+        }
+        let mut swap = marked.clone();
+        let mut current = vec![];
+        loop {
+            for a in &swap {
+                if let Some(instance) = heap.get(a) {
+                    for (_, value) in &instance.fields {
+                        if let Value::Instance(id) = value {
+                            if !marked.contains(id) {
+                                current.push(*id);
+                            }
+                        }
+                    }
+                }
+            }
+            if !current.is_empty() {
+                marked.append(&mut current);
+                swap = current.clone();
+                current.clear();
+            } else {
+                break;
+            }
+        }
+
+
+        // Step 2: Sweep
+        heap.retain(|id, _| marked.contains(id));
+        return heap;
+    }
+
+    #[test]
+    fn test_mark() {
+        let mut heap = HashMap::new();
+        let test_class = Class::new("TestClass".to_string(), HashMap::new());
+        let mut instance1 = Instance::new(test_class.clone());
+        instance1.fields.insert("foo".to_string(), Value::String("bar".to_string()));
+        let id = 0;
+        instance1.fields.insert("baz".to_string(), Value::Instance(1));
+        heap.insert(id, instance1);
+
+        let mut instance2 = Instance::new(test_class.clone());
+        instance2.fields.insert("foo".to_string(), Value::String("bar".to_string()));
+        instance2.fields.insert("baz".to_string(), Value::Instance(0));
+        let id = 1;
+
+        heap.insert(id, instance2);
+
+        println!("Heap: {:?}", heap.clone());
+        println!("MarkandSweep");
+        println!("Heap: {:?}", mark_and_sweep(vec![Value::Instance(1)], heap.clone()));
     }
 }
