@@ -379,6 +379,7 @@ impl VM {
         }
     }
 
+
     pub fn mark_and_sweep(&mut self) {
         // Step 1: Mark
         let mut marked = vec![];
