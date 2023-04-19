@@ -1,16 +1,13 @@
-class Animal {
-    speak() {
-        this.name = "Animal";
+class AppendX {
+    init(string) {
+        this.string = string
+    }
+    toString() {
+        return List(this.string, "x").toString()
     }
 }
 
-class Dog < Map {
-    speak(text) {
-        print "Dog speaking: " + text;
-    }
-}
+let list = List("a", AppendX("x"), List("c", "d", List("e", "f", List("g", "h", List("i", 1)))))
+print list.toString()
 
-let dog = Dog();
-dog.set("name", "Dog");
-dog.speak("Woof!");
-print dog.get("name");
+print fetch("http://httpbin.org/get");

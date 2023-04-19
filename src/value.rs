@@ -2,6 +2,7 @@ use std::fmt;
 use crate::class::Class;
 use crate::function::{Function, NativeFunction};
 use crate::instance::Instance;
+use crate::vm::VM;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Value {
@@ -13,6 +14,7 @@ pub enum Value {
     Native(NativeFunction),
     Class(Class),
     Instance(usize),
+    Foreign(usize),
 }
 
 impl Value {
@@ -22,6 +24,28 @@ impl Value {
 
     pub fn is_truthy(&self) -> bool {
         !matches!(self, Value::Nil | Value::Boolean(false))
+    }
+
+    pub fn to_string(&self, vm: &VM) -> String {
+        return match self {
+            Value::Number(n) => format!("{}", n),
+            Value::String(s) => format!("{}", s),
+            Value::Boolean(b) => format!("{}", b),
+            Value::Nil => format!("nil"),
+            Value::Function(_) => format!("<function>"),
+            Value::Native(_) => format!("<native fn>"),
+            Value::Class(c) => format!("class {}", c.name),
+            Value::Instance(i) => format!("<class instance #{}>", i),
+            Value::Foreign(f) => if let Some(foreign) = vm.heap.get(f) {
+                if let Some(to_string) = foreign.to_string(vm) {
+                    format!("{}", to_string)
+                } else {
+                    format!("<foreign>")
+                }
+            } else {
+                format!("<foreign>")
+            },
+        }
     }
 }
 
@@ -36,6 +60,7 @@ impl fmt::Display for Value {
             Value::Native(_) => write!(f, "<native fn>"),
             Value::Class(c) => write!(f, "class {}", c.name),
             Value::Instance(i) => write!(f, "<class instance #{}>", i),
+            Value::Foreign(_) => write!(f, "<foreign>"),
         }
     }
 }

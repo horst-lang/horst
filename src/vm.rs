@@ -10,15 +10,46 @@ use core::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-type Heap = HashMap<usize, Instance>;
+type Heap = HashMap<usize, Box<dyn Collectable>>;
 
 pub struct VM {
     pub(crate) call_stack: Vec<CallFrame>,
-    stack: Vec<Value>,
+    pub(crate) stack: Vec<Value>,
     globals: Vec<Option<Value>>,
     constants: Vec<Value>,
-    heap: Heap,
+    pub(crate) heap: Heap,
     next_id: usize,
+}
+
+pub trait Collectable: Any {
+    fn collect(&self) -> Vec<usize>;
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+    fn to_string(&self, _: &VM) -> Option<String> {
+        None
+    }
+}
+
+impl Collectable for Instance {
+    fn collect(&self) -> Vec<usize> {
+        let mut ids = vec![];
+
+        for (_, value) in &self.fields {
+            if let Value::Instance(id) = value {
+                ids.push(*id);
+            }
+        }
+
+        ids
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 impl VM {
@@ -87,9 +118,9 @@ impl VM {
                     if let (Value::Number(a), Value::Number(b)) = (a.clone(), b.clone()) {
                         self.push(Value::Number(a + b));
                     } else if let Value::String(a) = a {
-                        self.push(Value::String(a + &b.to_string()));
+                        self.push(Value::String(a + &b.to_string(self)));
                     } else if let Value::String(b) = b {
-                        self.push(Value::String(a.to_string() + &b));
+                        self.push(Value::String(a.to_string(self) + &b));
                     } else {
                         panic!("Invalid operands for addition.");
                     }
@@ -189,7 +220,7 @@ impl VM {
                     let name = self.constants[index].clone();
                     let instance = self.pop();
 
-                    if let (Value::Instance(instance), Value::String(name)) = (instance, name) {
+                    if let (Value::Instance(instance), Value::String(name)) = (instance.clone(), name) {
                         let instance = self.get_instance(instance).unwrap();
                         if let Some(value) = instance.fields.get(&name) {
                             self.push(value.clone());
@@ -230,19 +261,31 @@ impl VM {
                             args.push(self.pop());
                         }
                         self.pop();
-                        let result = (function.function)(args, self);
+                        let result = (function.function)(args.into_iter().rev().collect(), self);
                         self.push(result);
                     } else if let Value::Class(class) = function {
                         let value = self.new_instance(Instance::new(class.clone()));
                         let l = self.stack.len();
                         self.stack[l - arg_count - 1] = value.clone();
-                        if let Some(Value::Function(init)) = class.methods.get("init") {
-                            self.push(value);
+                        let init = class.methods.get("init");
+                        if let Some(Value::Function(init)) = init {
+                            let args = self.stack.split_off(l - arg_count);
+                            self.push(value.clone());
+                            self.stack.extend(args);
                             self.call_stack.push(CallFrame {
                                 function: init.clone(),
                                 base_pointer: self.stack.len() - arg_count - 1,
                                 ip: 0,
                             });
+                        } else if let Some(Value::Native(init)) = init {
+                            let mut args = Vec::with_capacity(arg_count + 1);
+                            for _ in 0..arg_count {
+                                args.push(self.pop());
+                            }
+                            args.push(value.clone());
+                            self.pop();
+                            (init.function)(args.into_iter().rev().collect(), self);
+                            self.push(value);
                         } else if arg_count != 0 {
                             panic!("Expected 0 arguments, got {}.", arg_count);
                         }
@@ -335,7 +378,7 @@ impl VM {
                 },
                 Instruction::Print => {
                     let value = self.pop();
-                    println!("{}", value);
+                    println!("{}", value.to_string(self));
                 },
                 Instruction::Halt => {
                     return Value::Nil;
@@ -371,7 +414,6 @@ impl VM {
     }
 
     fn get_method(&self, instance: &Instance, name: String) -> Value {
-        dbg!(instance.class.methods.clone());
         if let Some(value) = instance.class.methods.get(&name) {
             return value.clone();
         } else {
@@ -393,12 +435,17 @@ impl VM {
         loop {
             for a in &swap {
                 if let Some(instance) = self.heap.get(a) {
-                    for (_, value) in &instance.fields {
-                        if let Value::Instance(id) = value {
-                            if !marked.contains(id) {
-                                current.push(*id);
+                    match self.get_instance(*a) {
+                        Some(instance) => {
+                            for (_, value) in &instance.fields {
+                                if let Value::Instance(id) = value {
+                                    if !marked.contains(id) {
+                                        current.push(*id);
+                                    }
+                                }
                             }
-                        }
+                        },
+                        None => (),
                     }
                 }
             }
@@ -419,21 +466,42 @@ impl VM {
     pub fn new_instance(&mut self, instance: Instance) -> Value {
         let id = self.next_id;
         self.next_id += 1;
-        self.heap.insert(id, instance);
+        self.heap.insert(id, Box::new(instance));
         Value::Instance(id)
     }
 
     pub fn get_instance(&self, id: usize) -> Option<&Instance> {
         match self.heap.get(&id) {
-            Some(collectable) => Some(collectable),
+            Some(collectable) => collectable.as_any().downcast_ref::<Instance>(),
             None => None,
         }
     }
 
     pub(crate) fn get_instance_mut(&mut self, id: usize) -> Option<&mut Instance> {
         match self.heap.get_mut(&id) {
-            Some(collectable) => Some(collectable),
+            Some(collectable) => collectable.as_any_mut().downcast_mut::<Instance>(),
             None => None,
         }
+    }
+
+    pub fn get_collectable<T: Collectable>(&self, id: usize) -> Option<&T> {
+        match self.heap.get(&id) {
+            Some(collectable) => collectable.as_any().downcast_ref::<T>(),
+            None => None,
+        }
+    }
+
+    pub fn get_collectable_mut<T: Collectable>(&mut self, id: usize) -> Option<&mut T> {
+        match self.heap.get_mut(&id) {
+            Some(collectable) => collectable.as_any_mut().downcast_mut::<T>(),
+            None => None,
+        }
+    }
+
+    pub fn new_collectable<T: Collectable>(&mut self, collectable: T) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.heap.insert(id, Box::new(collectable));
+        id
     }
 }
