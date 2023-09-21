@@ -58,6 +58,7 @@ impl VM {
             function: Function {
                 instructions: program.instructions,
                 arity: 0,
+                upvalues: HashMap::new(),
             },
             ip: 0,
             base_pointer: 0,
@@ -244,12 +245,44 @@ impl VM {
                         panic!("Cannot set property of non-object.");
                     }
                 },
+                Instruction::MakeUpvalue(upvalue_index, local_index) => {
+                    let value = self.stack[frame.base_pointer + local_index].clone();
+                    frame.function.upvalues.insert(upvalue_index, self.next_id);
+                    self.new_collectable(value);
+                },
+                Instruction::GetUpvalue(upvalue_index) => {
+                    let closure = frame.function.clone();
+                    let upvalue = closure.upvalues[&upvalue_index].clone();
+                    let value = self.get_collectable::<Value>(upvalue).unwrap();
+                    self.push(value.clone());
+                },
+                Instruction::SetUpvalue(upvalue_index) => {
+                    let value = self.stack.last().unwrap().clone();
+                    let closure = frame.function.clone();
+                    let upvalue = closure.upvalues[&upvalue_index].clone();
+                    self.set_collectable(upvalue, value);
+                },
+                Instruction::MakeClosure => {
+                    let function = self.pop();
+                    let frame_closure = self.call_stack.last().unwrap().function.clone();
+                    if let Value::Function(mut function) = function {
+                        for (index, upvalue) in frame_closure.upvalues.iter() {
+                            function.upvalues.insert(*index,*upvalue);
+                        }
+
+                        self.push(Value::Function(function));
+                    } else {
+                        panic!("Cannot make closure of non-function.");
+                    }
+                },
                 Instruction::Call(arg_count) => {
                     let function = self.peek(arg_count + 1);
-
                     if let Value::Function(function) = function {
-                        let base_pointer = self.stack.len() - arg_count;
+                        if function.arity != arg_count {
+                            panic!("Expected {} arguments but got {}.", function.arity, arg_count);
+                        }
 
+                        let base_pointer = self.stack.len() - arg_count;
                         self.call_stack.push(CallFrame {
                             function,
                             base_pointer,
@@ -496,6 +529,10 @@ impl VM {
             Some(collectable) => collectable.as_any_mut().downcast_mut::<T>(),
             None => None,
         }
+    }
+
+    pub fn set_collectable<T: Collectable>(&mut self, id: usize, collectable: T) {
+        self.heap.insert(id, Box::new(collectable));
     }
 
     pub fn new_collectable<T: Collectable>(&mut self, collectable: T) -> usize {

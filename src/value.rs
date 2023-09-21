@@ -2,7 +2,7 @@ use std::fmt;
 use crate::class::Class;
 use crate::function::{Function, NativeFunction};
 use crate::instance::Instance;
-use crate::vm::VM;
+use crate::vm::{Collectable, VM};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Value {
@@ -62,5 +62,23 @@ impl fmt::Display for Value {
             Value::Instance(i) => write!(f, "<class instance #{}>", i),
             Value::Foreign(_) => write!(f, "<foreign>"),
         }
+    }
+}
+
+impl Collectable for Value {
+    fn collect(&self) -> Vec<usize> {
+        match self {
+            Value::Instance(id) => vec![*id],
+            Value::Foreign(id) => vec![*id],
+            _ => vec![],
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any { self }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+
+    fn to_string(&self, vm: &VM) -> Option<String> {
+        Some(self.to_string(vm))
     }
 }

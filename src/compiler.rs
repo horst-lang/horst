@@ -25,9 +25,32 @@ pub struct Compiler {
     current: usize,
     constants: Vec<Value>,
     globals: HashMap<String, usize>,
-    scopes: Vec<HashMap<String, usize>>,
+    scopes: Vec<Scope>,
     in_function: bool,
     current_super: Option<Instruction>,
+    upvalue_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct Scope {
+    locals: HashMap<String, usize>,
+    upvalues: HashMap<String, Upvalue>,
+}
+
+impl Scope {
+    pub fn new() -> Scope {
+        Self {
+            locals: HashMap::new(),
+            upvalues: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Upvalue {
+    is_local: bool,
+    local_index: usize,
+    upvalue_index: usize,
 }
 
 impl Compiler {
@@ -37,9 +60,10 @@ impl Compiler {
             current: 0,
             constants: vec![],
             globals: HashMap::new(),
-            scopes: vec![HashMap::new()],
+            scopes: vec![Scope::new()],
             in_function: false,
             current_super: None,
+            upvalue_count: 0,
         }
     }
 
@@ -102,10 +126,10 @@ impl Compiler {
     }
 
     fn define_local(&mut self, name: String, initializer: Vec<Instruction>) -> Vec<Instruction> {
-        assert!(!self.current_scope().contains_key(&name), "Variable with this name already defined in the same scope: {}", name);
+        assert!(!self.current_scope().locals.contains_key(&name), "Variable with this name already defined in the same scope: {}", name);
 
         let index = self.local_count();
-        self.current_scope_mut().insert(name, index);
+        self.current_scope_mut().locals.insert(name, index);
         initializer
     }
 
@@ -129,7 +153,7 @@ impl Compiler {
             loop {
                 let param = self.consume_identifier("Expect parameter name.");
 
-                assert!(!self.current_scope().contains_key(&param), "Cannot have two parameters with the same name: {}", param);
+                assert!(!self.current_scope().locals.contains_key(&param), "Cannot have two parameters with the same name: {}", param);
 
                 self.define_local(param.clone(), vec![]);
 
@@ -145,6 +169,13 @@ impl Compiler {
 
         let mut body = self.block();
 
+        let mut upvalues = vec![];
+        for (key, upvalue) in self.current_scope().upvalues.iter() {
+            if !upvalue.is_local && self.scopes[self.scopes.len() - 2].upvalues[key].is_local {
+                upvalues.push(Instruction::MakeUpvalue(upvalue.upvalue_index, upvalue.local_index));
+            }
+        }
+
         body.extend(self.end_scope());
         if body.last() != Some(&Instruction::Return) {
             body.push(Instruction::Nil);
@@ -158,31 +189,33 @@ impl Compiler {
 
         self.in_function = false;
 
-        vec![Instruction::Constant(index)]
+        upvalues.extend(vec![Instruction::Constant(index), Instruction::MakeClosure]);
+        upvalues
     }
 
     fn begin_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(Scope::new());
     }
 
     fn end_scope(&mut self) -> Vec<Instruction> {
         let scope = self.scopes.pop().unwrap();
         scope
+            .locals
             .into_iter()
             .map(|_| Instruction::Pop)
             .collect()
     }
 
-    fn current_scope(&self) -> &HashMap<String, usize> {
+    fn current_scope(&self) -> &Scope {
         self.scopes.last().unwrap()
     }
 
-    fn current_scope_mut(&mut self) -> &mut HashMap<String, usize> {
+    fn current_scope_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().unwrap()
     }
 
     fn local_count(&self) -> usize {
-        self.scopes.last().unwrap().len()
+        self.scopes.last().unwrap().locals.len()
     }
 
     fn global_count(&self) -> usize {
@@ -375,6 +408,9 @@ impl Compiler {
                 } else if let Instruction::GetProperty(index) = name {
                     instructions.extend(value);
                     instructions.push(Instruction::SetProperty(index));
+                } else if let Instruction::GetUpvalue(index) = name {
+                    instructions.extend(value);
+                    instructions.push(Instruction::SetUpvalue(index));
                 } else {
                     panic!("Invalid assignment target.");
                 }
@@ -633,18 +669,22 @@ impl Compiler {
     }
 
     fn get_native_class(&mut self, name: &str) -> Instruction {
-let index = self.add_constant(Value::Class(NATIVE_CLASSES[name].clone()));
+        let index = self.add_constant(Value::Class(NATIVE_CLASSES[name].clone()));
         Instruction::Constant(index)
     }
 
     fn get_variable(&mut self, name: &str) -> Instruction {
+
         if NATIVE_FUNCTIONS.contains_key(name) {
             self.get_native(&name)
         } else if NATIVE_CLASSES.contains_key(name) {
             self.get_native_class(&name)
-        } else  {
+        } else {
             let local_index = self.get_local_index(name);
-            return if let Some(local_index) = local_index {
+            let upvalue_index = self.get_upvalue_index(name);
+            return if let Some(upvalue_index) = upvalue_index {
+                Instruction::GetUpvalue(upvalue_index)
+            } else if let Some(local_index) = local_index {
                 Instruction::GetLocal(local_index)
             } else {
                 if !self.globals.contains_key(name) {
@@ -659,7 +699,10 @@ let index = self.add_constant(Value::Class(NATIVE_CLASSES[name].clone()));
 
     fn set_variable<S: ToString>(&mut self, name: S) -> Instruction {
         let local_index = self.get_local_index(&name.to_string());
-        return if let Some(local_index) = local_index {
+        let upvalue_index = self.get_upvalue_index(&name.to_string());
+        return if let Some(upvalue_index) = upvalue_index {
+            Instruction::SetUpvalue(upvalue_index)
+        } else if let Some(local_index) = local_index {
             Instruction::SetLocal(local_index)
         } else {
             let global_index = self.global_count();
@@ -672,12 +715,40 @@ let index = self.add_constant(Value::Class(NATIVE_CLASSES[name].clone()));
 
     fn get_local_index(&mut self, name: &str) -> Option<usize> {
         if self.in_function {
-            return self.scopes.last().unwrap().get(name).copied()
+            return self.scopes.last().unwrap().locals.get(name).copied()
+        }
+        for scope in &self.scopes {
+            if scope.locals.contains_key(name) {
+                return Some(scope.locals[name]);
+            }
+        }
+        None
+    }
+
+    fn get_upvalue_index(&mut self, name: &str) -> Option<usize> {
+        for (i, scope) in self.scopes.iter_mut().enumerate().rev().skip(1) {
+            if scope.upvalues.contains_key(name) {
+                return Some(scope.upvalues[name].upvalue_index);
+            }
         }
 
-        for scope in &self.scopes {
-            if scope.contains_key(name) {
-                return Some(scope[name]);
+        for (i, scope) in self.scopes.iter_mut().enumerate().rev().skip(1) {
+            if scope.locals.contains_key(name) {
+                let local_index = scope.locals[name];
+                scope.upvalues.insert(name.to_string(), Upvalue {
+                    is_local: true,
+                    local_index: scope.locals[name],
+                    upvalue_index: self.upvalue_count,
+                });
+                self.upvalue_count += 1;
+                for scope in &mut self.scopes[i + 1..] {
+                    scope.upvalues.insert(name.to_string(), Upvalue {
+                        is_local: false,
+                        local_index,
+                        upvalue_index: self.upvalue_count - 1,
+                    });
+                }
+                return Some(self.upvalue_count - 1);
             }
         }
         None

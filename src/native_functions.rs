@@ -48,6 +48,7 @@ fn make_map() -> Class {
     let mut methods = HashMap::new();
     methods.insert("get".to_string(), Value::Native(NativeFunction { function: map_get }));
     methods.insert("set".to_string(), Value::Native(NativeFunction { function: map_set }));
+    methods.insert("toString".to_string(), Value::Native(NativeFunction { function: map_to_string }));
     Class {
         name: "Map".to_string(),
         methods,
@@ -56,12 +57,12 @@ fn make_map() -> Class {
 
 fn map_get(args: Vec<Value>, vm: &mut VM) -> Value {
     let mut args = args;
-    let map = if let Value::Instance(map) = args.pop().unwrap() {
+    let map = if let Value::Instance(map) = args.remove(0) {
         vm.get_instance(map).unwrap()
     } else {
         panic!("First argument must be a map");
     };
-    let key = if let Value::String(key) = args.pop().unwrap() {
+    let key = if let Value::String(key) = args.remove(0) {
         key
     } else {
         panic!("Second argument must be a string");
@@ -70,13 +71,14 @@ fn map_get(args: Vec<Value>, vm: &mut VM) -> Value {
 }
 
 fn map_set(args: Vec<Value>, vm: &mut VM) -> Value {
+    println!("{:?}", args);
     let mut args = args;
-    let mut map = if let Value::Instance(map) = args.pop().unwrap() {
+    let mut map = if let Value::Instance(map) = args.remove(0) {
         vm.get_instance_mut(map).unwrap()
     } else {
         panic!("First argument must be a map");
     };
-    let key = if let Value::String(key) = args.pop().unwrap() {
+    let key = if let Value::String(key) = args.remove(0) {
         key
     } else {
         panic!("Second argument must be a string");
@@ -84,6 +86,28 @@ fn map_set(args: Vec<Value>, vm: &mut VM) -> Value {
     let value = args.pop().unwrap();
     map.fields.insert(key, value);
     Value::Nil
+}
+
+fn map_to_string(args: Vec<Value>, vm: &mut VM) -> Value {
+    let mut args = args;
+    let map = if let Value::Instance(map) = args.pop().unwrap() {
+        vm.get_instance(map).unwrap()
+    } else {
+        panic!("First argument must be a map");
+    };
+    let mut s = "{".to_string();
+    for (i, (key, value)) in map.fields.iter().enumerate() {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        if let Value::String(value) = value {
+            s.push_str(&format!("{}: \"{}\"", key, value));
+        } else {
+            s.push_str(&format!("{}: {}", key, value));
+        }
+    }
+    s.push('}');
+    Value::String(s)
 }
 
 fn make_list() -> Class {

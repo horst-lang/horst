@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use crate::instruction::Instruction;
@@ -8,6 +9,7 @@ use crate::vm::VM;
 pub struct Function {
     pub instructions: Vec<Instruction>,
     pub arity: usize,
+    pub upvalues: HashMap<usize, usize>,
 }
 
 #[derive(Clone)]
@@ -37,10 +39,11 @@ impl fmt::Debug for NativeFunction {
 
 
 impl Function {
-    pub const fn new(instructions: Vec<Instruction>, arity: usize) -> Function {
+    pub fn new(instructions: Vec<Instruction>, arity: usize) -> Function {
         Function {
             instructions,
             arity,
+            upvalues: HashMap::new(),
         }
     }
 }

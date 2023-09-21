@@ -1,13 +1,13 @@
-class AppendX {
-    init(string) {
-        this.string = string
-    }
-    toString() {
-        return List(this.string, "x").toString()
-    }
+fn f() {
+    let x = 1;
+    let g = fn () {
+        x = x + 1;
+        return x;
+    };
+    return g;
 }
 
-let list = List("a", AppendX("x"), List("c", "d", List("e", "f", List("g", "h", List("i", 1)))))
-print list.toString()
-
-print fetch("http://httpbin.org/get");
+let g = f();
+print g();
+print g();
+print g();
