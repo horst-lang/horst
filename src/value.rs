@@ -1,4 +1,5 @@
 use std::fmt;
+use std::any::{ Any };
 use crate::class::Class;
 use crate::function::{Function, NativeFunction};
 use crate::instance::Instance;
