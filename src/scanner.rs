@@ -52,7 +52,8 @@ impl Scanner {
                     self.add_token(Token::Slash);
                 }
             },
-            '"' => self.string(),
+            '"' => self.string('"'),
+            '\'' => self.string('\''),
             '0'..='9' => self.number(),
             'a'..='z' | 'A'..='Z' | '_' => self.identifier(),
             _ => panic!("Unexpected character {}", c),
@@ -65,11 +66,11 @@ impl Scanner {
         }
     }
 
-    fn string(&mut self) {
+    fn string(&mut self, terminator: char) {
         let mut string = String::new();
         let mut escape = false;
 
-        while self.peek() != '"' || escape {
+        while self.peek() != terminator || escape {
 
             assert!(!self.is_at_end(), "Unterminated string.");
 
