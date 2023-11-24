@@ -1,6 +1,7 @@
 use std::fmt;
 use crate::class::{Class, ClassRef};
 use crate::function::{Function, NativeFunction};
+use crate::gc::{GcRef, GcTrace};
 use crate::instance::Instance;
 use crate::vm::UpvalueRegistry;
 
@@ -12,18 +13,18 @@ pub enum Value {
     Nil,
     Function(Function),
     NativeFunction(NativeFunction),
-    Class(ClassRef),
-    Instance(InstanceRef),
-    Closure(Function, Vec<UpvalueRegistryRef>),
+    Class(GcRef<Class>),
+    Instance(GcRef<Instance>),
+    Closure(Function, Vec<GcRef<UpvalueRegistry>>),
     BoundMethod {
-        receiver: InstanceRef,
+        receiver: GcRef<Instance>,
         function: Function,
-        upvalues: Vec<UpvalueRegistryRef>,
+        upvalues: Vec<GcRef<UpvalueRegistry>>,
     },
 }
 
-pub type InstanceRef = usize;
-pub type UpvalueRegistryRef = usize;
+pub type InstanceRef = GcRef<Instance>;
+pub type UpvalueRegistryRef = GcRef<UpvalueRegistry>;
 
 impl Value {
     pub fn is_falsey(&self) -> bool {
@@ -51,5 +52,21 @@ impl fmt::Display for Value {
                 write!(f, "<bound method {}>", function.name)
             }
         }
+    }
+}
+
+impl GcTrace for Value {
+    fn size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn trace(&self, _: &mut crate::gc::Gc) {}
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

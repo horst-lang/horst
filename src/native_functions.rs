@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::io::Read;
-use std::ops::Add;
+use std::ops::{Add, Deref};
 use lazy_static::lazy_static;
 use crate::class::Class;
 use crate::frame::CallFrame;
 use crate::function::{Function, NativeFunction};
 use crate::instance::Instance;
 use crate::value::Value;
-use crate::vm::{Collectable, VM};
+use crate::vm::{VM};
 lazy_static!(
     pub static ref NATIVE_FUNCTIONS: HashMap<String, NativeFunction> = {
         let mut map = HashMap::new();
@@ -57,7 +57,7 @@ fn make_map() -> Class {
 fn map_get(args: Vec<Value>, vm: &mut VM) -> Value {
     let mut args = args;
     let map = if let Value::Instance(map) = args.remove(0) {
-        vm.get_instance(map).unwrap()
+        vm.gc.deref(map)
     } else {
         panic!("First argument must be a map");
     };
@@ -73,7 +73,7 @@ fn map_set(args: Vec<Value>, vm: &mut VM) -> Value {
     println!("{:?}", args);
     let mut args = args;
     let mut map = if let Value::Instance(map) = args.remove(0) {
-        vm.get_instance_mut(map).unwrap()
+        vm.gc.deref_mut(map)
     } else {
         panic!("First argument must be a map");
     };
@@ -90,7 +90,7 @@ fn map_set(args: Vec<Value>, vm: &mut VM) -> Value {
 fn map_to_string(args: Vec<Value>, vm: &mut VM) -> Value {
     let mut args = args;
     let map = if let Value::Instance(map) = args.pop().unwrap() {
-        vm.get_instance(map).unwrap()
+        vm.gc.deref(map)
     } else {
         panic!("First argument must be a map");
     };

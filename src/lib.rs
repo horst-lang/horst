@@ -9,6 +9,7 @@ pub mod vm;
 pub mod native_functions;
 pub mod class;
 pub mod instance;
+pub mod gc;
 
 #[cfg(test)]
 mod tests {

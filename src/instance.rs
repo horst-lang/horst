@@ -1,8 +1,8 @@
 use std::any::Any;
 use std::collections::HashMap;
 use crate::class::{Class, ClassRef};
+use crate::gc::GcTrace;
 use crate::value::Value;
-use crate::vm::Collectable;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Instance {
@@ -19,7 +19,17 @@ impl Instance {
     }
 }
 
-impl Collectable for Instance {
+impl GcTrace for Instance {
+    fn size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn trace(&self, _gc: &mut crate::gc::Gc) {
+        for (_, value) in self.fields.iter() {
+            value.trace(_gc);
+        }
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

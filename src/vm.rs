@@ -6,39 +6,17 @@ use std::os::unix::process::parent_id;
 use crate::class::{Class, ClassRef};
 use crate::frame::CallFrame;
 use crate::function::Function;
+use crate::gc::{Gc, GcRef, GcTrace};
 use crate::instance::Instance;
 use crate::instruction::Instruction;
 use crate::value::{InstanceRef, UpvalueRegistryRef, Value};
-
-struct Heap {
-    objects: HashMap<usize, Box<dyn Collectable>>,
-    next_id: usize,
-}
-
-
-impl Heap {
-    fn new() -> Heap {
-        Heap {
-            objects: HashMap::new(),
-            next_id: 0,
-        }
-    }
-}
-
-pub trait Collectable: Any {
-    fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-    fn to_string(&self, _: &VM) -> Option<String> {
-        None
-    }
-}
 
 pub struct VM {
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
     globals: HashMap<String, Value>,
     open_upvalues: Vec<UpvalueRegistryRef>,
-    heap: Heap,
+    pub(crate) gc: Gc,
 }
 
 impl VM {
@@ -48,7 +26,7 @@ impl VM {
             frames: Vec::new(),
             globals: HashMap::new(),
             open_upvalues: Vec::new(),
-            heap: Heap::new(),
+            gc: Gc::new(),
         }
     }
 
@@ -182,14 +160,14 @@ impl VM {
                 Instruction::Class(index) => {
                     let name = self.read_string(index);
                     let class = Class::new(name);
-                    let value = self.new_class(class);
+                    let value = Value::Class(self.alloc(class));
                     self.stack.push(value);
                 }
                 Instruction::Inherit => {
                     if let (Value::Class(mut subclass_ref), Value::Class(superclass_ref)) =
                         (self.stack.pop().unwrap(), self.peek(0).unwrap()) {
-                        let superclass = self.get_class(*superclass_ref).unwrap().clone();
-                        let mut subclass = self.get_class_mut(subclass_ref).unwrap();
+                        let superclass = self.gc.deref(*superclass_ref).clone();
+                        let mut subclass = self.gc.deref_mut(subclass_ref);
                         for (name, method) in &superclass.methods {
                             subclass.methods.insert(name.clone(), method.clone());
                         }
@@ -291,11 +269,11 @@ impl VM {
     }
 
     fn capture_upvalue(&mut self, index: usize) -> UpvalueRegistryRef {
-        if let Some(upvalue) = self.open_upvalues.iter().find(|upvalue| matches!(self.get_collectable::<UpvalueRegistry>(**upvalue), Some(&UpvalueRegistry::Open(i)) if i == index)) {
+        if let Some(upvalue) = self.open_upvalues.iter().find(|upvalue| matches!(self.gc.deref(upvalue.clone().clone()), UpvalueRegistry::Open(index))) {
             upvalue.clone()
         } else {
             let upvalue = UpvalueRegistry::Open(index);
-            let upvalue_ref = self.new_collectable(upvalue);
+            let upvalue_ref = self.alloc(upvalue);
             self.open_upvalues.push(upvalue_ref);
             upvalue_ref
         }
@@ -303,7 +281,7 @@ impl VM {
 
     fn get_upvalue(&mut self, index: usize) {
         let upvalue_ref = self.frame().get_upvalue(index);
-        let upvalue = self.get_collectable::<UpvalueRegistry>(upvalue_ref).unwrap().clone();
+        let upvalue = self.gc.deref(upvalue_ref).clone();
         match upvalue {
             UpvalueRegistry::Open(index) => {
                 let value = self.stack[index].clone();
@@ -318,7 +296,7 @@ impl VM {
     fn set_upvalue(&mut self, index: usize) {
         let value = self.peek(0).unwrap().clone();
         let upvalue_ref = self.frame_mut().get_upvalue(index);
-        let upvalue = self.get_collectable_mut::<UpvalueRegistry>(upvalue_ref).unwrap();
+        let upvalue = self.gc.deref_mut(upvalue_ref);
         match upvalue {
             UpvalueRegistry::Open(index) => {
                 let index = *index;
@@ -332,7 +310,7 @@ impl VM {
 
     fn close_upvalues(&mut self, index: usize) {
         while let Some(upvalue_ref) = self.open_upvalues.last() {
-            let upvalue = self.get_collectable::<UpvalueRegistry>(*upvalue_ref).unwrap();
+            let upvalue = self.gc.deref(*upvalue_ref);
             let slot = if let UpvalueRegistry::Open(slot) = upvalue {
                 if *slot <= index {
                     break;
@@ -343,7 +321,7 @@ impl VM {
             };
             let upvalue_ref = self.open_upvalues.pop().unwrap();
             let value = self.stack[slot].clone();
-            let upvalue = self.get_collectable_mut::<UpvalueRegistry>(upvalue_ref).unwrap();
+            let upvalue = self.gc.deref_mut(upvalue_ref);
             upvalue.close(value);
         }
     }
@@ -353,7 +331,7 @@ impl VM {
         let instance = self.stack.pop().unwrap();
         match instance {
             Value::Instance(instance_ref) => {
-                let instance = self.get_collectable::<Instance>(instance_ref).unwrap().clone();
+                let instance = self.gc.deref(instance_ref).clone();
                 if let Some(value) = instance.fields.get(&name) {
                     self.stack.push(value.clone());
                 } else {
@@ -365,7 +343,7 @@ impl VM {
     }
 
     fn bind_method(&mut self, class: ClassRef, instance: InstanceRef, name: String) {
-        let class = self.get_class(class).unwrap().clone();
+        let class = self.gc.deref(class).clone();
         if let Some(method) = class.methods.get(&name) {
             let (function, upvalues) = match method {
                 Value::Function(f) => (f, Vec::new()),
@@ -390,7 +368,7 @@ impl VM {
 
         match instance {
             Value::Instance(instance_ref) => {
-                let mut instance = self.get_collectable_mut::<Instance>(instance_ref).unwrap();
+                let mut instance = self.gc.deref_mut(instance_ref);
                 instance.fields.insert(name, value.clone());
             }
             _ => panic!("Only instances have fields."),
@@ -413,7 +391,7 @@ impl VM {
         let class = self.peek(0).unwrap().clone();
         if let Value::Class(class) = class {
             let name = self.read_string(index);
-            let class = self.get_class_mut(class).unwrap();
+            let class = self.gc.deref_mut(class);
             class.methods.insert(name, method);
         } else {
             panic!("Expected class.");
@@ -424,7 +402,7 @@ impl VM {
         let receiver = self.peek(arg_count).unwrap().clone();
         match receiver {
             Value::Instance(instance_ref) => {
-                let instance = self.get_collectable::<Instance>(instance_ref).unwrap().clone();
+                let instance = self.gc.deref(instance_ref).clone();
                 if let Some(method) = instance.fields.get(&method) {
                     let l = self.stack.len();
                     self.stack[l - arg_count - 1] = method.clone();
@@ -439,7 +417,7 @@ impl VM {
     }
 
     fn invoke_from_class(&mut self, class: ClassRef, method: String, arg_count: usize) {
-        let class = self.get_class(class).unwrap().clone();
+        let class = self.gc.deref(class).clone();
         if let Some(method) = class.methods.get(&method) {
             self.call_value(method.clone(), arg_count);
         } else {
@@ -457,12 +435,12 @@ impl VM {
             }
             Value::Class(class) => {
                 let instance = Instance::new(class.clone());
-                let instance_ref = self.new_collectable(instance);
+                let instance_ref = self.alloc(instance);
                 let value = Value::Instance(instance_ref);
                 let l = self.stack.len();
                 self.stack[l - arg_count - 1] = value;
 
-                let class = self.get_class(class).unwrap().clone();
+                let class = self.gc.deref(class).clone();
                 if let Some(init) = class.methods.get("init") {
                     match init {
                         Value::Closure(function, upvalues) => {
@@ -531,67 +509,16 @@ impl VM {
         self.stack.push(value);
     }
 
-    pub fn new_instance(&mut self, instance: Instance) -> Value {
-        let id = self.heap.next_id;
-        self.heap.next_id += 1;
-        self.heap.objects.insert(id, Box::new(instance));
-        Value::Instance(id)
+    pub fn alloc<T: GcTrace + 'static>(&mut self, obj: T) -> GcRef<T> {
+        self.gc.alloc(obj)
     }
 
-    pub fn get_instance(&self, id: usize) -> Option<&Instance> {
-        match self.heap.objects.get(&id) {
-            Some(collectable) => collectable.as_any().downcast_ref::<Instance>(),
-            None => None,
-        }
+    pub fn deref<T: GcTrace + 'static>(&self, r: GcRef<T>) -> &T {
+        self.gc.deref(r)
     }
 
-    pub(crate) fn get_instance_mut(&mut self, id: usize) -> Option<&mut Instance> {
-        match self.heap.objects.get_mut(&id) {
-            Some(collectable) => collectable.as_any_mut().downcast_mut::<Instance>(),
-            None => None,
-        }
-    }
-
-    pub(crate) fn new_class(&mut self, class: Class) -> Value {
-        let id = self.heap.next_id;
-        self.heap.next_id += 1;
-        self.heap.objects.insert(id, Box::new(class));
-        Value::Class(id)
-    }
-
-    pub(crate) fn get_class(&self, id: usize) -> Option<&Class> {
-        match self.heap.objects.get(&id) {
-            Some(collectable) => collectable.as_any().downcast_ref::<Class>(),
-            None => None,
-        }
-    }
-
-    pub(crate) fn get_class_mut(&mut self, id: usize) -> Option<&mut Class> {
-        match self.heap.objects.get_mut(&id) {
-            Some(collectable) => collectable.as_any_mut().downcast_mut::<Class>(),
-            None => None,
-        }
-    }
-
-    pub fn get_collectable<T: Collectable>(&self, id: usize) -> Option<&T> {
-        match self.heap.objects.get(&id) {
-            Some(collectable) => collectable.as_any().downcast_ref::<T>(),
-            None => None,
-        }
-    }
-
-    pub fn get_collectable_mut<T: Collectable>(&mut self, id: usize) -> Option<&mut T> {
-        match self.heap.objects.get_mut(&id) {
-            Some(collectable) => collectable.as_any_mut().downcast_mut::<T>(),
-            None => None,
-        }
-    }
-
-    pub fn new_collectable<T: Collectable>(&mut self, collectable: T) -> usize {
-        let id = self.heap.next_id;
-        self.heap.next_id += 1;
-        self.heap.objects.insert(id, Box::new(collectable));
-        id
+    pub fn deref_mut<T: GcTrace + 'static>(&mut self, r: GcRef<T>) -> &mut T {
+        self.gc.deref_mut(r)
     }
 
 }
@@ -601,8 +528,13 @@ pub enum UpvalueRegistry {
     Open(usize),
     Closed(Value),
 }
+impl GcTrace for UpvalueRegistry {
+    fn size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 
-impl Collectable for UpvalueRegistry {
+    fn trace(&self, _: &mut Gc) {}
+
     fn as_any(&self) -> &dyn Any {
         self
     }
