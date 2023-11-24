@@ -1,866 +1,1050 @@
 use std::collections::HashMap;
-use crate::class::Class;
+use std::mem;
+use crate::frame::Chunk;
 use crate::function::Function;
 use crate::instruction::Instruction;
-use crate::native_functions::{NATIVE_FUNCTIONS, NATIVE_CLASSES};
-use crate::token::Token;
+use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::Value;
+use crate::vm::FunctionUpvalue;
 
-#[derive(PartialEq)]
-enum FunctionKind {
+#[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
+enum Precedence {
+    None,
+    Assignment,  // =
+    Or,          // or
+    And,         // and
+    Equality,    // == !=
+    Comparison,  // < > <= >=
+    Term,        // + -
+    Factor,      // * /
+    Unary,       // ! -
+    Call,        // . () []
+    Primary
+}
+
+impl Precedence {
+    fn next(&self) -> Precedence {
+        match self {
+            Precedence::None => Precedence::Assignment,
+            Precedence::Assignment => Precedence::Or,
+            Precedence::Or => Precedence::And,
+            Precedence::And => Precedence::Equality,
+            Precedence::Equality => Precedence::Comparison,
+            Precedence::Comparison => Precedence::Term,
+            Precedence::Term => Precedence::Factor,
+            Precedence::Factor => Precedence::Unary,
+            Precedence::Unary => Precedence::Call,
+            Precedence::Call => Precedence::Primary,
+            Precedence::Primary => Precedence::None,
+        }
+    }
+}
+
+type ParseFn<'src> = fn(&mut Parser<'src>, can_assign: bool) -> ();
+
+#[derive(Copy, Clone)]
+struct ParseRule<'src> {
+    prefix: Option<ParseFn<'src>>,
+    infix: Option<ParseFn<'src>>,
+    precedence: Precedence,
+}
+
+impl<'src> ParseRule<'src> {
+    fn new(prefix: Option<ParseFn<'src>>, infix: Option<ParseFn<'src>>, precedence: Precedence) -> Self {
+        ParseRule {
+            prefix,
+            infix,
+            precedence,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+struct Local<'src> {
+    name: Token<'src>,
+    depth: i32,
+    is_captured: bool,
+}
+
+impl<'src> Local<'src> {
+    fn new(name: Token<'src>, depth: i32) -> Self {
+        Local {
+            name,
+            depth,
+            is_captured: false,
+        }
+    }
+}
+
+#[derive(PartialEq, Copy, Clone, Debug)]
+pub enum FunctionType {
     Function,
     Method,
-    Anonymous,
+    Initializer,
+    Script,
 }
 
-#[derive(Debug, PartialEq)]
-pub struct Program {
-    pub instructions: Vec<Instruction>,
-    pub constants: Vec<Value>,
-    pub global_count: usize,
+struct Compiler<'src> {
+    enclosing: Option<Box<Compiler<'src>>>,
+    function: Function,
+    function_type: FunctionType,
+    locals: Vec<Local<'src>>,
+    scope_depth: i32,
 }
 
-pub struct Compiler {
-    tokens: Vec<Token>,
-    current: usize,
-    constants: Vec<Value>,
-    globals: HashMap<String, usize>,
-    scopes: Vec<Scope>,
-    in_function: bool,
-    current_super: Option<Instruction>,
-    upvalue_count: usize,
-}
+impl<'src> Compiler<'src> {
+    fn new(function_name: &'src str, function_type: FunctionType) -> Box<Self> {
+        let mut compiler = Compiler {
+            enclosing: None,
+            function: Function::new(function_name, 0, Chunk::new("")),
+            function_type,
+            locals: Vec::new(),
+            scope_depth: 0,
+        };
+        println!("Compiler::new: function_type={:?}", function_type);
+        let token = match function_type {
+            FunctionType::Method | FunctionType::Initializer => Token::synthetic("this"),
+            _ => Token::synthetic(""),
+        };
+        compiler.locals.push(Local::new(token, 0));
+        Box::new(compiler)
+    }
 
-#[derive(Debug, Clone)]
-struct Scope {
-    locals: HashMap<String, usize>,
-    upvalues: HashMap<String, Upvalue>,
-}
-
-impl Scope {
-    pub fn new() -> Scope {
-        Self {
-            locals: HashMap::new(),
-            upvalues: HashMap::new(),
+    fn resolve_local(&self, name: Token<'src>, errors: &mut Vec<&'static str>) -> Option<usize> {
+        for (i, local) in self.locals.iter().enumerate().rev() {
+            if local.name.lexeme == name.lexeme {
+                if local.depth == -1 {
+                    errors.push("Cannot read local variable in its own initializer.");
+                }
+                return Some(i);
+            }
         }
+        None
+    }
+
+    fn resolve_upvalue(&mut self, name: Token<'src>, errors: &mut Vec<&'static str>) -> Option<usize> {
+        if let Some(enclosing) = &mut self.enclosing {
+            if let Some(local) = enclosing.resolve_local(name, errors) {
+                enclosing.locals[local].is_captured = true;
+                return Some(self.add_upvalue(local, true, errors));
+            }
+            if let Some(upvalue) = enclosing.resolve_upvalue(name, errors) {
+                return Some(self.add_upvalue(upvalue, false, errors));
+            }
+        }
+        None
+    }
+
+    fn add_upvalue(&mut self, index: usize, is_local: bool, errors: &mut Vec<&'static str>) -> usize {
+        for (i, upvalue) in self.function.upvalues.iter().enumerate() {
+            if upvalue.index == index && upvalue.is_local == is_local {
+                return i;
+            }
+        }
+        let upvalue = FunctionUpvalue { index, is_local };
+        self.function.upvalues.push(upvalue);
+        self.function.upvalues.len() - 1
+    }
+
+    fn is_local_declared(&self, name: Token<'src>) -> bool {
+        for local in self.locals.iter().rev() {
+            if local.depth != -1 && local.depth < self.scope_depth {
+                break;
+            }
+            if local.name.lexeme == name.lexeme {
+                return true;
+            }
+        }
+        false
     }
 }
 
-#[derive(Debug, Clone)]
-struct Upvalue {
-    is_local: bool,
-    local_index: usize,
-    upvalue_index: usize,
+struct ClassCompiler {
+    enclosing: Option<Box<ClassCompiler>>,
+    has_superclass: bool,
 }
 
-impl Compiler {
-    pub fn new(tokens: Vec<Token>) -> Compiler {
-        Compiler {
-            tokens,
-            current: 0,
-            constants: vec![],
-            globals: HashMap::new(),
-            scopes: vec![Scope::new()],
-            in_function: false,
-            current_super: None,
-            upvalue_count: 0,
+impl ClassCompiler {
+    fn new(enclosing: Option<Box<ClassCompiler>>) -> Box<Self> {
+        Box::new(ClassCompiler {
+            enclosing,
+            has_superclass: false,
+        })
+    }
+}
+
+pub struct Parser<'src> {
+    scanner: Scanner<'src>,
+    compiler: Box<Compiler<'src>>,
+    class_compiler: Option<Box<ClassCompiler>>,
+    current: Token<'src>,
+    previous: Token<'src>,
+    had_error: bool,
+    panic_mode: bool,
+    resolver_errors: Vec<&'static str>,
+    rules: HashMap<TokenType, ParseRule<'src>>,
+}
+
+impl<'src> Parser<'src> {
+    fn new(source: &'src str) -> Self {
+        let rules = Parser::rules();
+        Parser {
+            scanner: Scanner::new(source),
+            compiler: Compiler::new("script", FunctionType::Script),
+            class_compiler: None,
+            current: Token::synthetic(""),
+            previous: Token::synthetic(""),
+            had_error: false,
+            panic_mode: false,
+            resolver_errors: Vec::new(),
+            rules,
         }
     }
 
-    pub fn compile(&mut self) -> Program {
-        let mut instructions = vec![];
+    fn rules() -> HashMap<TokenType, ParseRule<'src>> {
+        let mut rules = HashMap::new();
 
-        while !self.is_at_end() {
-            instructions.extend(self.declaration());
-        }
-
-        instructions.push(Instruction::Halt);
-
-        Program {
-            instructions,
-            constants: self.constants.clone(),
-            global_count: self.global_count(),
-        }
-    }
-
-    fn declaration(&mut self) -> Vec<Instruction> {
-        if self.match_token(Token::Let) {
-            self.let_declaration()
-        } else if self.match_token(Token::Fn) {
-            self.function_declaration()
-        } else if self.match_token(Token::Class) {
-            self.class_declaration()
-        } else {
-            self.statement()
-        }
-    }
-
-    fn let_declaration(&mut self) -> Vec<Instruction> {
-        let name = self.consume_identifier("Expect variable name.");
-        let global = self.scopes.len() == 1;
-
-        let initializer = if self.match_token(Token::Equal) {
-            self.expression()
-        } else {
-            vec![Instruction::Nil]
+        let mut rule = |kind, prefix, infix, precedence| {
+            rules.insert(kind, ParseRule::new(prefix, infix, precedence));
         };
 
-        self.match_token(Token::Semicolon);
+        use Precedence as P;
+        use TokenType::*;
 
-        if global {
-            self.define_global(name, initializer)
+        rule(LeftParen, Some(Parser::grouping), Some(Parser::call), P::Call);
+        rule(RightParen, None, None, P::None);
+        rule(LeftBrace, None, None, P::None);
+        rule(RightBrace, None, None, P::None);
+        rule(LeftBracket, Some(Parser::array), Some(Parser::index), P::Call);
+        rule(RightBracket, None, None, P::None);
+        rule(Comma, None, None, P::None);
+        rule(Dot, None, Some(Parser::dot), P::Call);
+        rule(Minus, Some(Parser::unary), Some(Parser::binary), P::Term);
+        rule(Plus, None, Some(Parser::binary), P::Term);
+        rule(Semicolon, None, None, P::None);
+        rule(Slash, None, Some(Parser::binary), P::Factor);
+        rule(Star, None, Some(Parser::binary), P::Factor);
+        rule(Bang, Some(Parser::unary), None, P::None);
+        rule(BangEqual, None, Some(Parser::binary), P::Equality);
+        rule(Equal, None, None, P::None);
+        rule(EqualEqual, None, Some(Parser::binary), P::Equality);
+        rule(Greater, None, Some(Parser::binary), P::Comparison);
+        rule(GreaterEqual, None, Some(Parser::binary), P::Comparison);
+        rule(Less, None, Some(Parser::binary), P::Comparison);
+        rule(LessEqual, None, Some(Parser::binary), P::Comparison);
+        rule(Identifier, Some(Parser::variable), None, P::None);
+        rule(String, Some(Parser::string), None, P::None);
+        rule(Number, Some(Parser::number), None, P::None);
+        rule(And, None, Some(Parser::and_op), P::And);
+        rule(Class, None, None, P::None);
+        rule(Else, None, None, P::None);
+        rule(False, Some(Parser::literal), None, P::None);
+        rule(For, None, None, P::None);
+        rule(Fn, None, None, P::None);
+        rule(If, None, None, P::None);
+        rule(Nil, Some(Parser::literal), None, P::None);
+        rule(Or, None, Some(Parser::or_op), P::Or);
+        rule(Print, None, None, P::None);
+        rule(Return, None, None, P::None);
+        rule(Super, Some(Parser::super_), None, P::None);
+        rule(This, Some(Parser::this), None, P::None);
+        rule(True, Some(Parser::literal), None, P::None);
+        rule(Let, None, None, P::None);
+        rule(While, None, None, P::None);
+        rule(Error, None, None, P::None);
+        rule(Eof, None, None, P::None);
+
+        rules
+    }
+
+    fn compile(mut self) -> Result<Function, ()> {
+        self.advance();
+
+        while !self.matches(TokenType::Eof) {
+            self.declaration();
+        }
+
+        self.emit_return();
+
+        if self.had_error {
+            Err(())
         } else {
-            self.define_local(name, initializer)
+            Ok(self.compiler.function)
         }
     }
 
-    fn define_global(&mut self, name: String, mut initializer: Vec<Instruction>) -> Vec<Instruction> {
-        let mut index = self.global_count();
-        if self.globals.contains_key(&name) {
-            index = self.globals[&name];
+    fn expression(&mut self) {
+        self.parse_precedence(Precedence::Assignment);
+    }
+
+    fn expression_statement(&mut self) {
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after expression.");
+        self.emit(Instruction::Pop);
+    }
+
+    fn declaration(&mut self) {
+        if self.matches(TokenType::Class) {
+            self.class_declaration();
+        } else if self.matches(TokenType::Fn) {
+            self.fun_declaration();
+        } else if self.matches(TokenType::Let) {
+            self.var_declaration();
+        } else {
+            self.statement();
         }
-        self.globals.insert(name, index);
 
-        initializer.push(Instruction::DefineGlobal(index));
-        initializer
+        if self.panic_mode {
+            self.synchronize();
+        }
     }
 
-    fn define_local(&mut self, name: String, initializer: Vec<Instruction>) -> Vec<Instruction> {
-        assert!(!self.current_scope().locals.contains_key(&name), "Variable with this name already defined in the same scope: {}", name);
+    fn class_declaration(&mut self) {
+        self.consume(TokenType::Identifier, "Expect class name.");
+        let class_name = self.previous;
+        let name_constant = self.identifier_constant(class_name);
+        self.declare_variable();
+        self.emit(Instruction::Class(name_constant));
+        self.define_variable(name_constant);
 
-        let index = self.local_count();
-        self.current_scope_mut().locals.insert(name, index);
-        initializer
+        let old_class_compiler = self.class_compiler.take();
+        let new_class_compiler = ClassCompiler::new(old_class_compiler);
+        self.class_compiler.replace(new_class_compiler);
+
+        if self.matches(TokenType::Less) {
+            self.consume(TokenType::Identifier, "Expect superclass name.");
+            self.variable(false);
+            if class_name.lexeme == self.previous.lexeme {
+                self.error("A class can't inherit from itself.");
+            }
+            self.begin_scope();
+            self.add_local(Token::synthetic("super"));
+            self.define_variable(0);
+            self.named_variable(class_name, false);
+            self.emit(Instruction::Inherit);
+            self.class_compiler.as_mut().unwrap().has_superclass = true;
+        }
+
+        self.named_variable(class_name, false);
+        self.consume(TokenType::LeftBrace, "Expect '{' before class body.");
+        while !self.check(TokenType::RightBrace) && !self.check(TokenType::Eof) {
+            self.method();
+        }
+        self.consume(TokenType::RightBrace, "Expect '}' after class body.");
+        self.emit(Instruction::Pop);
+        if self.class_compiler.as_ref().unwrap().has_superclass {
+            self.end_scope();
+        }
+
+        match self.class_compiler.take() {
+            Some(c) => self.class_compiler = c.enclosing,
+            None => self.class_compiler = None,
+        }
+
     }
 
-    fn function_declaration(&mut self) -> Vec<Instruction> {
-        let name = self.consume_identifier("Expect function name.");
-        let function = self.function(FunctionKind::Function);
-        self.define_global(name, function)
+    fn fun_declaration(&mut self) {
+        let global = self.parse_variable("Expect function name.");
+        self.mark_initialized();
+        self.function(FunctionType::Function);
+        self.define_variable(global);
     }
 
-    fn function(&mut self, kind: FunctionKind) -> Vec<Instruction> {
-        self.in_function = true;
+    fn push_compiler(&mut self, kind: FunctionType) {
+        let function_name = self.previous.lexeme;
+        let new_compiler = Compiler::new(function_name, kind);
+        let old_compiler = mem::replace(&mut self.compiler, new_compiler);
+        self.compiler.enclosing = Some(old_compiler);
+    }
+
+    fn pop_compiler(&mut self) -> Function {
+        self.emit_return();
+        match self.compiler.enclosing.take() {
+            Some(enclosing) => {
+                let compiler = mem::replace(&mut self.compiler, enclosing);
+                compiler.function
+            }
+            None => panic!("Did not find enclosing compiler."),
+        }
+    }
+
+    fn function(&mut self, kind: FunctionType) {
+        self.push_compiler(kind);
         self.begin_scope();
-        self.consume_token(Token::LeftParen, "Expect '(' after function name.");
-
-        let mut parameters = vec![];
-        if kind == FunctionKind::Method {
-            self.define_local("this".to_string(), vec![]);
-        }
-
-        if !self.check(&Token::RightParen) {
+        self.consume(TokenType::LeftParen, "Expect '(' after function name.");
+        if !self.check(TokenType::RightParen) {
             loop {
-                let param = self.consume_identifier("Expect parameter name.");
-
-                assert!(!self.current_scope().locals.contains_key(&param), "Cannot have two parameters with the same name: {}", param);
-
-                self.define_local(param.clone(), vec![]);
-
-                parameters.push(param);
-
-                if !self.match_token(Token::Comma) {
+                self.compiler.function.arity += 1;
+                let param_constant = self.parse_variable("Expect parameter name.");
+                self.define_variable(param_constant);
+                if !self.matches(TokenType::Comma) {
                     break;
                 }
             }
         }
+        self.consume(TokenType::RightParen, "Expect ')' after parameters.");
+        self.consume(TokenType::LeftBrace, "Expect '{' before function body.");
+        self.block();
+        let function = self.pop_compiler();
+        let index = self.make_constant(Value::Function(function));
+        self.emit(Instruction::Closure(index));
+    }
 
-        self.consume_token(Token::RightParen, "Expect ')' after parameters.");
+    fn method(&mut self) {
+        self.consume(TokenType::Identifier, "Expect method name.");
+        let constant = self.identifier_constant(self.previous);
+        let function_type = if self.previous.lexeme == "init" {
+            FunctionType::Initializer
+        } else {
+            FunctionType::Method
+        };
+        self.function(function_type);
+        self.emit(Instruction::Method(constant));
+    }
 
-        let mut body = self.block();
+    fn var_declaration(&mut self) {
+        let index = self.parse_variable("Expect variable name.");
 
-        let mut upvalues = vec![];
-        for (key, upvalue) in self.current_scope().upvalues.iter() {
-            if !upvalue.is_local && self.scopes[self.scopes.len() - 2].upvalues[key].is_local {
-                upvalues.push(Instruction::MakeUpvalue(upvalue.upvalue_index, upvalue.local_index));
+        if self.matches(TokenType::Equal) {
+            self.expression();
+        } else {
+            self.emit(Instruction::Nil);
+        }
+        self.consume(TokenType::Semicolon, "Expect ';' after variable declaration.");
+        self.define_variable(index);
+    }
+
+    fn define_variable(&mut self, index: usize) {
+        if self.compiler.scope_depth > 0 {
+            self.mark_initialized();
+            return;
+        }
+        self.emit(Instruction::DefineGlobal(index));
+    }
+
+    fn mark_initialized(&mut self) {
+        if self.compiler.scope_depth == 0 {
+            return;
+        }
+        let local = self.compiler.locals.last_mut().unwrap();
+        local.depth = self.compiler.scope_depth;
+    }
+
+    fn statement(&mut self) {
+        if self.matches(TokenType::Print) {
+            self.print_statement();
+        } else if self.matches(TokenType::If) {
+            self.if_statement();
+        } else if self.matches(TokenType::Return) {
+            self.return_statement();
+        } else if self.matches(TokenType::While) {
+            self.while_statement();
+        } else if self.matches(TokenType::For) {
+            self.for_statement();
+        } else if self.matches(TokenType::LeftBrace) {
+            self.begin_scope();
+            self.block();
+            self.end_scope();
+        } else {
+            self.expression_statement();
+        }
+    }
+
+    fn return_statement(&mut self) {
+        if self.compiler.function_type == FunctionType::Script {
+            self.error("Can't return from top-level code.");
+        }
+        if self.matches(TokenType::Semicolon) {
+            self.emit_return();
+        } else {
+            if self.compiler.function_type == FunctionType::Initializer {
+                self.error("Can't return a value from an initializer.");
             }
+            self.expression();
+            self.consume(TokenType::Semicolon, "Expect ';' after return value.");
+            self.emit(Instruction::Return);
+        }
+    }
+
+    fn if_statement(&mut self) {
+        self.consume(TokenType::LeftParen, "Expect '(' after 'if'.");
+        self.expression();
+        self.consume(TokenType::RightParen, "Expect ')' after condition.");
+
+        let then_jump = self.emit(Instruction::JumpIfFalse(0));
+        self.emit(Instruction::Pop);
+        self.statement();
+        let else_jump = self.emit(Instruction::Jump(0));
+
+        self.patch_jump(then_jump);
+        self.emit(Instruction::Pop);
+
+        if self.matches(TokenType::Else) {
+            self.statement();
+        }
+        self.patch_jump(else_jump);
+    }
+
+    fn while_statement(&mut self) {
+        let loop_start = self.start_loop();
+        self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
+        self.expression();
+        self.consume(TokenType::RightParen, "Expect ')' after condition.");
+
+        let exit_jump = self.emit(Instruction::JumpIfFalse(0));
+        self.emit(Instruction::Pop);
+        self.statement();
+        self.emit_loop(loop_start);
+
+        self.patch_jump(exit_jump);
+        self.emit(Instruction::Pop);
+    }
+
+    // Either normal or for-in loop.
+    fn for_statement(&mut self) {
+        self.begin_scope();
+        self.consume(TokenType::LeftParen, "Expect '(' after 'for'.");
+
+        // Initializer clause.
+        if self.matches(TokenType::Semicolon) {
+            // No initializer.
+        } else if self.matches(TokenType::Let) {
+            self.consume(TokenType::Identifier, "Expect variable name.");
+
+            if self.check(TokenType::In) {
+                self.for_in_statement();
+                self.end_scope();
+                return;
+            }
+
+            self.declare_variable();
+            let mut index;
+            if self.compiler.scope_depth > 0 {
+                index = 0;
+            }
+            index = self.identifier_constant(self.previous);
+
+            if self.matches(TokenType::Equal) {
+                self.expression();
+            } else {
+                self.emit(Instruction::Nil);
+            }
+            self.consume(TokenType::Semicolon, "Expect ';' after variable declaration.");
+            self.define_variable(index);
+        } else {
+            self.expression_statement();
         }
 
-        body.extend(self.end_scope());
-        if body.last() != Some(&Instruction::Return) {
-            body.push(Instruction::Nil);
-            body.push(Instruction::Return);
+        let mut loop_start = self.start_loop();
+
+        // Condition clause.
+        let mut exit_jump = None;
+        if !self.matches(TokenType::Semicolon) {
+            self.expression();
+            self.consume(TokenType::Semicolon, "Expect ';' after loop condition.");
+
+            exit_jump = Some(self.emit(Instruction::JumpIfFalse(0)));
+            self.emit(Instruction::Pop);
         }
 
-        let index = self.add_constant(Value::Function(Function::new(
-            body,
-            parameters.len(),
-        )));
+        // Increment clause.
+        if !self.matches(TokenType::RightParen) {
+            let body_jump = self.emit(Instruction::Jump(0));
+            let increment_start = self.start_loop();
+            self.expression();
+            self.emit(Instruction::Pop);
+            self.consume(TokenType::RightParen, "Expect ')' after for clauses.");
 
-        self.in_function = false;
+            self.emit_loop(loop_start);
+            loop_start = increment_start;
+            self.patch_jump(body_jump);
+        }
 
-        upvalues.extend(vec![Instruction::Constant(index), Instruction::MakeClosure]);
-        upvalues
+        self.statement();
+        self.emit_loop(loop_start);
+
+        if let Some(exit_jump) = exit_jump {
+            self.patch_jump(exit_jump);
+            self.emit(Instruction::Pop);
+        }
+
+        self.end_scope();
+    }
+
+    fn for_in_statement(&mut self) {
+        let identifier = self.previous;
+        self.consume(TokenType::In, "Expect 'in' after loop variable.");
+        self.expression();
+        let iterator_const = self.identifier_constant(Token::synthetic("iterator"));
+        self.emit(Instruction::Invoke(iterator_const, 0));
+        self.add_local(Token::synthetic("$iterator"));
+        let iterator = self.compiler.locals.len() - 1;
+        self.define_variable(iterator);
+        self.consume(TokenType::RightParen, "Expect ')' after expression.");
+
+
+        let loop_start = self.start_loop();
+        self.emit(Instruction::GetLocal(iterator));
+        let has_next = self.identifier_constant(Token::synthetic("hasNext"));
+        self.emit(Instruction::Invoke(has_next, 0));
+
+        let exit_jump = self.emit(Instruction::JumpIfFalse(0));
+        self.emit(Instruction::Pop);
+
+        self.emit(Instruction::GetLocal(iterator));
+        let next = self.identifier_constant(Token::synthetic("next"));
+        self.emit(Instruction::Invoke(next, 0));
+        self.add_local(identifier);
+        self.define_variable(self.compiler.locals.len() - 1);
+
+        self.statement();
+
+        self.emit(Instruction::Pop);
+        self.emit_loop(loop_start);
+
+        self.patch_jump(exit_jump);
     }
 
     fn begin_scope(&mut self) {
-        self.scopes.push(Scope::new());
+        self.compiler.scope_depth += 1;
     }
 
-    fn end_scope(&mut self) -> Vec<Instruction> {
-        let scope = self.scopes.pop().unwrap();
-        scope
-            .locals
-            .into_iter()
-            .map(|_| Instruction::Pop)
-            .collect()
-    }
-
-    fn current_scope(&self) -> &Scope {
-        self.scopes.last().unwrap()
-    }
-
-    fn current_scope_mut(&mut self) -> &mut Scope {
-        self.scopes.last_mut().unwrap()
-    }
-
-    fn local_count(&self) -> usize {
-        self.scopes.last().unwrap().locals.len()
-    }
-
-    fn global_count(&self) -> usize {
-        self.globals.len()
-    }
-
-    fn add_constant(&mut self, value: Value) -> usize {
-        for (index, constant) in self.constants.iter().enumerate() {
-            if *constant == value {
-                return index;
+    fn end_scope(&mut self) {
+        self.compiler.scope_depth -= 1;
+        for i in (0..self.compiler.locals.len()).rev() {
+            if self.compiler.locals[i].depth > self.compiler.scope_depth {
+                if self.compiler.locals[i].is_captured {
+                    self.emit(Instruction::CloseUpvalue);
+                } else {
+                    self.emit(Instruction::Pop);
+                }
+                self.compiler.locals.pop();
             }
         }
-
-        self.constants.push(value);
-        self.constants.len() - 1
     }
 
-    fn class_declaration(&mut self) -> Vec<Instruction> {
-        let name = self.consume_identifier("Expect class name.");
-        let superclass = if self.match_token(Token::Less) {
-            let name = self.consume_identifier("Expect superclass name.");
-            Some(self.get_variable(&name))
-        } else {
-            None
+    fn block(&mut self) {
+        while !self.check(TokenType::RightBrace) && !self.check(TokenType::Eof) {
+            self.declaration();
+        }
+        self.consume(TokenType::RightBrace, "Expect '}' after block.");
+    }
+
+    fn print_statement(&mut self) {
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after value.");
+        self.emit(Instruction::Print);
+    }
+
+    fn number(&mut self, _can_assign: bool) {
+        let value = self.previous.lexeme.parse::<f64>().unwrap();
+        self.emit_constant(Value::Number(value));
+    }
+
+    fn string(&mut self, _can_assign: bool) {
+        let lexeme = self.previous.lexeme;
+        let value = lexeme[1..lexeme.len() - 1].to_string();
+        self.emit_constant(Value::String(value));
+    }
+
+    fn literal(&mut self, _can_assign: bool) {
+        match self.previous.kind {
+            TokenType::False => self.emit(Instruction::False),
+            TokenType::Nil => self.emit(Instruction::Nil),
+            TokenType::True => self.emit(Instruction::True),
+            _ => unreachable!(),
         };
-        self.current_super = superclass.clone();
+    }
 
-        self.consume_token(Token::LeftBrace, "Expect '{' before class body.");
+    fn variable(&mut self, can_assign: bool) {
+        self.named_variable(self.previous, can_assign);
+    }
 
-        let mut methods = HashMap::new();
-
-        while !self.check(&Token::RightBrace) && !self.is_at_end() {
-            let name = self.consume_identifier("Expect function name.");
-            let function = self.function(FunctionKind::Method);
-            let function = self.remove_constant(function[0]);
-            if let Value::Function(function) = function {
-                methods.insert(name, function);
-            } else {
-                panic!("Expected function.");
+    fn super_(&mut self, _can_assign: bool) {
+        if let Some(current_class) = self.class_compiler.as_ref() {
+            if !current_class.has_superclass {
+                self.error("Can't use 'super' in a class with no superclass.");
             }
-        }
-        self.current_super = None;
-
-        self.consume_token(Token::RightBrace, "Expect '}' after class body.");
-
-        let index = self.add_constant(Value::Class(Class::new(name.clone(), methods)));
-
-        let mut instructions = vec![Instruction::Constant(index)];
-        if let Some(superclass) = superclass {
-            instructions.push(superclass);
-            instructions.push(Instruction::Inherit);
-        }
-
-        self.define_global(name, instructions)
-    }
-
-    fn remove_constant(&mut self, instruction: Instruction) -> Value {
-        match instruction {
-            Instruction::Constant(index) => self.constants.remove(index),
-            _ => panic!("Expected constant instruction."),
-        }
-    }
-
-    fn statement(&mut self) -> Vec<Instruction> {
-        if self.match_token(Token::Print) {
-            self.print_statement()
-        } else if self.check(&Token::LeftBrace) {
-            self.block_statement()
-        } else if self.match_token(Token::If) {
-            self.if_statement()
-        } else if self.match_token(Token::While) {
-            self.while_statement()
-        } else if self.match_token(Token::Return) {
-            self.return_statement()
         } else {
-            self.expression_statement()
+            self.error("Can't use 'super' outside of a class.");
         }
-    }
+        self.consume(TokenType::Dot, "Expect '.' after 'super'.");
+        self.consume(TokenType::Identifier, "Expect superclass method name.");
+        let name = self.identifier_constant(self.previous);
+        self.named_variable(Token::synthetic("this"), false);
 
-    fn block_statement(&mut self) -> Vec<Instruction> {
-        self.begin_scope();
-        let mut instructions = self.block();
-        instructions.extend(self.end_scope());
-
-        instructions
-    }
-
-    fn if_statement(&mut self) -> Vec<Instruction> {
-        let mut instructions = vec![];
-
-        self.consume_token(Token::LeftParen, "Expect '(' after 'if'.");
-        instructions.extend(self.expression());
-        self.consume_token(Token::RightParen, "Expect ')' after condition.");
-
-        let then_instructions = self.block_statement();
-        let mut else_instructions = vec![];
-
-        if self.match_token(Token::Else) {
-            else_instructions = self.block_statement();
-        }
-
-        instructions.push(Instruction::JumpIfFalse(then_instructions.len() + 2));
-        instructions.extend(then_instructions);
-        instructions.push(Instruction::Jump(else_instructions.len() + 1));
-        instructions.extend(else_instructions);
-
-        instructions
-    }
-
-    fn return_statement(&mut self) -> Vec<Instruction> {
-        let mut instructions = vec![];
-
-        if self.check(&Token::Semicolon) {
-            instructions.push(Instruction::Nil);
+        if self.matches(TokenType::LeftParen) {
+            let arg_count = self.argument_list();
+            self.named_variable(Token::synthetic("super"), false);
+            self.emit(Instruction::SuperInvoke(name, arg_count));
         } else {
-            instructions.extend(self.expression());
+            self.named_variable(Token::synthetic("super"), false);
+            self.emit(Instruction::GetSuper(name));
+        }
+    }
+
+    fn this(&mut self, _can_assign: bool) {
+        if self.class_compiler.is_none() {
+            self.error("Can't use 'this' outside of a class.");
+            return;
+        }
+        self.variable(false);
+    }
+
+    fn named_variable(&mut self, name: Token<'src>, can_assign: bool) {
+        let get_op;
+        let set_op;
+        if let Some(local) = self.resolve_local(name) {
+            get_op = Instruction::GetLocal(local);
+            set_op = Instruction::SetLocal(local);
+        } else if let Some(upvalue) = self.resolve_upvalue(name) {
+            get_op = Instruction::GetUpvalue(upvalue);
+            set_op = Instruction::SetUpvalue(upvalue);
+        } else {
+            let global = self.identifier_constant(name);
+            get_op = Instruction::GetGlobal(global);
+            set_op = Instruction::SetGlobal(global);
         }
 
-        self.match_token(Token::Semicolon);
-
-        instructions.push(Instruction::Return);
-
-        instructions
-    }
-
-    fn while_statement(&mut self) -> Vec<Instruction> {
-        let mut instructions = vec![];
-
-        self.consume_token(Token::LeftParen, "Expect '(' after 'while'.");
-        let condition = self.expression();
-        let condition_length = condition.len();
-        instructions.extend(condition);
-        self.consume_token(Token::RightParen, "Expect ')' after condition.");
-
-        let body = self.block_statement();
-        let body_length = body.len();
-
-        // Example Instructions:
-        // [ True, JumpIfFalse(3), Constant(0), Print, Pop, JumpBack(4)
-
-        instructions.push(Instruction::JumpIfFalse(body_length + 2));
-        instructions.extend(body);
-        instructions.push(Instruction::JumpBack(body_length + condition_length + 1));
-
-        instructions
-    }
-
-    fn print_statement(&mut self) -> Vec<Instruction> {
-        let mut instructions = self.expression();
-        instructions.push(Instruction::Print);
-
-        self.match_token(Token::Semicolon);
-
-        instructions
-    }
-
-    fn expression_statement(&mut self) -> Vec<Instruction> {
-        let mut instructions = self.expression();
-
-        self.match_token(Token::Semicolon);
-
-        instructions.push(Instruction::Pop);
-
-        instructions
-    }
-
-    fn expression(&mut self) -> Vec<Instruction> {
-        let mut instructions = self.assignment();
-
-        while self.match_token(Token::Equal) {
-            instructions.extend(self.assignment());
+        if can_assign && self.matches(TokenType::Equal) {
+            self.expression();
+            self.emit(set_op);
+        } else {
+            self.emit(get_op);
         }
-
-        instructions
     }
 
-    fn assignment(&mut self) -> Vec<Instruction> {
-        let mut instructions = self.or();
+    fn resolve_local(&mut self, name: Token) -> Option<usize> {
+        let result = self.compiler.resolve_local(name, &mut self.resolver_errors);
+        while let Some(e) = self.resolver_errors.pop() {
+            self.error(e)
+        }
+        result
+    }
 
-        if self.match_token(Token::Equal) {
-            let value = self.assignment();
+    fn resolve_upvalue(&mut self, name: Token<'src>) -> Option<usize> {
+        let result = self.compiler.resolve_upvalue(name, &mut self.resolver_errors);
+        while let Some(e) = self.resolver_errors.pop() {
+            self.error(e)
+        }
+        result
+    }
 
-            if let Some(name) = instructions.pop() {
-                if let Instruction::GetGlobal(index) = name {
-                    instructions.extend(value);
-                    instructions.push(Instruction::SetGlobal(index));
-                } else if let Instruction::GetLocal(index) = name {
-                    instructions.extend(value);
-                    instructions.push(Instruction::SetLocal(index));
-                } else if let Instruction::GetProperty(index) = name {
-                    instructions.extend(value);
-                    instructions.push(Instruction::SetProperty(index));
-                } else if let Instruction::GetUpvalue(index) = name {
-                    instructions.extend(value);
-                    instructions.push(Instruction::SetUpvalue(index));
-                } else {
-                    panic!("Invalid assignment target.");
+    fn call(&mut self, _can_assign: bool) {
+        let arg_count = self.argument_list();
+        self.emit(Instruction::Call(arg_count));
+    }
+
+    fn dot(&mut self, can_assign: bool) {
+        self.consume(TokenType::Identifier, "Expect property name after '.'.");
+        let name = self.identifier_constant(self.previous);
+
+        if can_assign && self.matches(TokenType::Equal) {
+            self.expression();
+            self.emit(Instruction::SetProperty(name));
+        } else if self.matches(TokenType::LeftParen) {
+            let arg_count = self.argument_list();
+            self.emit(Instruction::Invoke(name, arg_count));
+        } else {
+            self.emit(Instruction::GetProperty(name));
+        }
+    }
+
+    fn index(&mut self, _can_assign: bool) {
+        self.expression();
+        self.consume(TokenType::RightBracket, "Expect ']' after index.");
+        let get = self.identifier_constant(Token::synthetic("get"));
+        let set = self.identifier_constant(Token::synthetic("set"));
+
+        if self.matches(TokenType::Equal) {
+            self.expression();
+            self.emit(Instruction::Invoke(set, 2));
+        } else {
+            self.emit(Instruction::Invoke(get, 1));
+        }
+    }
+
+    fn argument_list(&mut self) -> usize {
+        let mut arg_count = 0;
+        if !self.check(TokenType::RightParen) {
+            loop {
+                self.expression();
+                arg_count += 1;
+                if !self.matches(TokenType::Comma) {
+                    break;
                 }
-            } else {
-                panic!("Invalid assignment target.");
-            }
-
-        }
-
-        instructions
-    }
-
-    fn or(&mut self) -> Vec<Instruction> {
-        let mut instructions = self.and();
-
-        while self.match_token(Token::Or) {
-            instructions.extend(self.and());
-            instructions.push(Instruction::Or);
-        }
-
-        instructions
-    }
-
-    fn and(&mut self) -> Vec<Instruction> {
-        let mut instructions = self.equality();
-
-        while self.match_token(Token::And) {
-            instructions.extend(self.equality());
-            instructions.push(Instruction::And);
-        }
-
-        instructions
-    }
-
-    fn equality(&mut self) -> Vec<Instruction> {
-        let mut instructions = self.comparison();
-
-        while self.match_token(Token::BangEqual) {
-            instructions.extend(self.comparison());
-            instructions.push(Instruction::NotEqual);
-        }
-
-        while self.match_token(Token::EqualEqual) {
-            instructions.extend(self.comparison());
-            instructions.push(Instruction::Equal);
-        }
-
-        instructions
-    }
-
-    fn comparison(&mut self) -> Vec<Instruction> {
-        let mut instructions = self.addition();
-
-        while self.match_token(Token::Greater) {
-            instructions.extend(self.addition());
-            instructions.push(Instruction::Greater);
-        }
-
-        while self.match_token(Token::GreaterEqual) {
-            instructions.extend(self.addition());
-            instructions.push(Instruction::GreaterEqual);
-        }
-
-        while self.match_token(Token::Less) {
-            instructions.extend(self.addition());
-            instructions.push(Instruction::Less);
-        }
-
-        while self.match_token(Token::LessEqual) {
-            instructions.extend(self.addition());
-            instructions.push(Instruction::LessEqual);
-        }
-
-        instructions
-    }
-
-    fn addition(&mut self) -> Vec<Instruction> {
-        let mut instructions = self.multiplication();
-
-        while self.match_token(Token::Minus) {
-            instructions.extend(self.multiplication());
-            instructions.push(Instruction::Subtract);
-        }
-
-        while self.match_token(Token::Plus) {
-            instructions.extend(self.multiplication());
-            instructions.push(Instruction::Add);
-        }
-
-        instructions
-    }
-
-    fn multiplication(&mut self) -> Vec<Instruction> {
-        let mut instructions = self.unary();
-
-        while self.match_token(Token::Slash) {
-            instructions.extend(self.unary());
-            instructions.push(Instruction::Divide);
-        }
-
-        while self.match_token(Token::Star) {
-            instructions.extend(self.unary());
-            instructions.push(Instruction::Multiply);
-        }
-
-        instructions
-    }
-
-    fn unary(&mut self) -> Vec<Instruction> {
-        let mut instructions = vec![];
-
-        if self.match_token(Token::Bang) {
-            instructions.extend(self.unary());
-            instructions.push(Instruction::Not);
-        } else if self.match_token(Token::Minus) {
-            instructions.extend(self.unary());
-            instructions.push(Instruction::Negate);
-        } else {
-            instructions.extend(self.call());
-        }
-
-        instructions
-    }
-
-    fn call(&mut self) -> Vec<Instruction> {
-        let mut instructions = vec![];
-
-        instructions.extend(self.primary());
-
-        loop {
-            match self.peek().clone() {
-                Token::LeftParen => instructions.extend(self.finish_call()),
-                Token::Dot => instructions.extend(self.finish_get(instructions.clone())),
-                _ => break,
             }
         }
-
-        instructions
+        self.consume(TokenType::RightParen, "Expect ')' after arguments.");
+        arg_count
     }
 
-    fn finish_call(&mut self) -> Vec<Instruction> {
-        let mut instructions = vec![];
-
-        self.consume_token(Token::LeftParen, "Expect '(' after function name.");
-
-        let mut arguments: usize = 0;
-
-        while !self.match_token(Token::RightParen) {
-            if arguments > 0 {
-                self.consume_token(Token::Comma, "Expect ',' after function argument.");
-            }
-
-            instructions.extend(self.expression());
-            arguments += 1;
-        }
-
-        instructions.push(Instruction::Call(arguments));
-
-        instructions
+    fn grouping(&mut self, _can_assign: bool) {
+        self.expression();
+        self.consume(TokenType::RightParen, "Expect ')' after expression.");
     }
 
-    fn finish_get(&mut self, vec1: Vec<Instruction>) -> Vec<Instruction> {
-        let mut instructions = vec![];
-
-        self.consume_token(Token::Dot, "Expect '.' after object.");
-        let name = self.consume_identifier("Expect property name after '.'.");
-        let index = self.add_constant(Value::String(name.clone()));
-        if self.peek() == &Token::LeftParen {
-            let mut call = self.finish_call();
-            if let Some(Instruction::Call(arguments)) = call.pop() {
-                instructions.push(Instruction::GetProperty(index));
-                instructions.extend(vec1);
-                instructions.extend(call);
-                instructions.push(Instruction::Call(arguments + 1));
-            }
-        } else {
-            instructions.push(Instruction::GetProperty(index));
-        }
-
-        instructions
-    }
-
-    fn primary(&mut self) -> Vec<Instruction> {
-        let mut instructions = vec![];
-
-        match self.peek().clone() {
-            Token::False => {
-                instructions.push(Instruction::False);
-                self.advance();
-            },
-            Token::True => {
-                instructions.push(Instruction::True);
-                self.advance();
-            },
-            Token::Nil => {
-                instructions.push(Instruction::Nil);
-                self.advance();
-            },
-            Token::Number(value) => {
-                let index = self.add_constant(Value::Number(value));
-                instructions.push(Instruction::Constant(index));
-                self.advance();
-            },
-            Token::String(s) => {
-                let index = self.add_constant(Value::String(s));
-                instructions.push(Instruction::Constant(index));
-                self.advance();
-            },
-            Token::Identifier(name) => {
-                instructions.push(self.get_variable(&name));
-                self.advance();
-            },
-            Token::LeftParen => {
-                self.advance();
-                instructions.extend(self.expression());
-                self.consume_token(Token::RightParen, "Expect ')' after expression.");
-            },
-            Token::Fn => {
-                self.advance();
-                instructions.extend(self.function(FunctionKind::Anonymous));
-            },
-            Token::Super => {
-                if let Some(superclass) = self.current_super {
-                    self.advance();
-                    self.consume_token(Token::Dot, "Expect '.' after 'super'.");
-                    let method = self.consume_identifier("Expect superclass method name.");
-                    let index = self.add_constant(Value::String(method));
-                    let mut call = self.finish_call();
-                    if let Some(Instruction::Call(arguments)) = call.pop() {
-                        instructions.push(superclass);
-                        instructions.push(Instruction::GetSuper(index));
-                        instructions.push(Instruction::GetLocal(0));
-                        instructions.extend(call);
-                        instructions.push(Instruction::Call(arguments + 1));
-                    }
-
-                } else {
-                    panic!("No superclass defined.");
+    fn array(&mut self, _can_assign: bool) {
+        let mut arg_count = 0;
+        let array = self.identifier_constant(Token::synthetic("Array"));
+        self.emit(Instruction::GetGlobal(array));
+        let args = self.emit(Instruction::Nil);
+        self.emit(Instruction::Call(1));
+        self.add_local(Token::synthetic("$array"));
+        let array = self.compiler.locals.len() - 1;
+        self.mark_initialized();
+        if !self.check(TokenType::RightBracket) {
+            loop {
+                self.emit(Instruction::GetLocal(array));
+                self.emit_constant(Value::Number(arg_count as f64));
+                self.expression();
+                let set = self.identifier_constant(Token::synthetic("set"));
+                self.emit(Instruction::Invoke(set, 2));
+                self.emit(Instruction::Pop);
+                arg_count += 1;
+                if !self.matches(TokenType::Comma) {
+                    break;
                 }
-            },
-            Token::This => {
-                instructions.push(Instruction::GetLocal(0));
-                self.advance();
-            },
-            _ => {
-                panic!("Expected expression, got {:?}", self.peek());
             }
         }
-
-        instructions
+        // Patch args
+        let args_num = self.make_constant(Value::Number(arg_count as f64));
+        self.compiler.function.chunk.code[args] = Instruction::Constant(args_num);
+        self.consume(TokenType::RightBracket, "Expect ']' after array elements.");
     }
 
-    fn get_native(&mut self, name: &str) -> Instruction {
-        let index = self.add_constant(Value::Native(NATIVE_FUNCTIONS[name].clone()));
-        Instruction::Constant(index)
+    fn unary(&mut self, _can_assign: bool) {
+        let operator_type = self.previous.kind;
+        self.parse_precedence(Precedence::Unary);
+        match operator_type {
+            TokenType::Bang => self.emit(Instruction::Not),
+            TokenType::Minus => self.emit(Instruction::Negate),
+            _ => unreachable!(),
+        };
     }
 
-    fn get_native_class(&mut self, name: &str) -> Instruction {
-        let index = self.add_constant(Value::Class(NATIVE_CLASSES[name].clone()));
-        Instruction::Constant(index)
+    fn binary(&mut self, _can_assign: bool) {
+        let operator_type = self.previous.kind;
+        let rule = self.get_rule(operator_type);
+        self.parse_precedence(rule.precedence.next());
+        match operator_type {
+            TokenType::Plus => self.emit(Instruction::Add),
+            TokenType::Minus => self.emit(Instruction::Subtract),
+            TokenType::Star => self.emit(Instruction::Multiply),
+            TokenType::Slash => self.emit(Instruction::Divide),
+            TokenType::BangEqual => self.emit_two(Instruction::Equal, Instruction::Not),
+            TokenType::EqualEqual => self.emit(Instruction::Equal),
+            TokenType::Greater => self.emit(Instruction::Greater),
+            TokenType::GreaterEqual => self.emit_two(Instruction::Less, Instruction::Not),
+            TokenType::Less => self.emit(Instruction::Less),
+            TokenType::LessEqual => self.emit_two(Instruction::Greater, Instruction::Not),
+            _ => unreachable!(),
+        };
     }
 
-    fn get_variable(&mut self, name: &str) -> Instruction {
+    fn and_op(&mut self, _can_assign: bool) {
+        let end_jump = self.emit(Instruction::JumpIfFalse(0));
+        self.emit(Instruction::Pop);
+        self.parse_precedence(Precedence::And);
+        self.patch_jump(end_jump);
+    }
 
-        if NATIVE_FUNCTIONS.contains_key(name) {
-            self.get_native(&name)
-        } else if NATIVE_CLASSES.contains_key(name) {
-            self.get_native_class(&name)
-        } else {
-            let local_index = self.get_local_index(name);
-            let upvalue_index = self.get_upvalue_index(name);
-            return if let Some(upvalue_index) = upvalue_index {
-                Instruction::GetUpvalue(upvalue_index)
-            } else if let Some(local_index) = local_index {
-                Instruction::GetLocal(local_index)
-            } else {
-                if !self.globals.contains_key(name) {
-                    self.globals.insert(name.to_string(), self.global_count());
-                }
+    fn or_op(&mut self, _can_assign: bool) {
+        let else_jump = self.emit(Instruction::JumpIfFalse(0));
+        let end_jump = self.emit(Instruction::Jump(0));
+        self.patch_jump(else_jump);
+        self.emit(Instruction::Pop);
+        self.parse_precedence(Precedence::Or);
+        self.patch_jump(end_jump);
+    }
 
-                let index = self.globals.get(name).unwrap();
-                Instruction::GetGlobal(*index)
+    fn parse_precedence(&mut self, precedence: Precedence) {
+        self.advance();
+        let prefix_rule = self.get_rule(self.previous.kind).prefix;
+
+        let prefix_rule = match prefix_rule {
+            Some(rule) => rule,
+            None => {
+                self.error("Expect expression.");
+                return;
             }
+        };
+
+        let can_assign = precedence <= Precedence::Assignment;
+        prefix_rule(self, can_assign);
+
+        while self.is_lower_precedence(precedence) {
+            self.advance();
+            let infix_rule = self.get_rule(self.previous.kind).infix.unwrap();
+            infix_rule(self, can_assign);
+        }
+
+        if can_assign && self.matches(TokenType::Equal) {
+            self.error("Invalid assignment target.");
         }
     }
 
-    fn set_variable<S: ToString>(&mut self, name: S) -> Instruction {
-        let local_index = self.get_local_index(&name.to_string());
-        let upvalue_index = self.get_upvalue_index(&name.to_string());
-        return if let Some(upvalue_index) = upvalue_index {
-            Instruction::SetUpvalue(upvalue_index)
-        } else if let Some(local_index) = local_index {
-            Instruction::SetLocal(local_index)
-        } else {
-            let global_index = self.global_count();
-            self.globals.entry(name.to_string()).or_insert_with(|| global_index);
-
-            let index = self.globals.get(&name.to_string()).unwrap();
-            Instruction::SetGlobal(*index)
+    fn parse_variable(&mut self, error_message: &str) -> usize {
+        self.consume(TokenType::Identifier, error_message);
+        self.declare_variable();
+        if self.compiler.scope_depth > 0 {
+            return 0;
         }
+        self.identifier_constant(self.previous)
     }
 
-    fn get_local_index(&mut self, name: &str) -> Option<usize> {
-        if self.in_function {
-            return self.scopes.last().unwrap().locals.get(name).copied()
-        }
-        for scope in &self.scopes {
-            if scope.locals.contains_key(name) {
-                return Some(scope.locals[name]);
-            }
-        }
-        None
+    fn identifier_constant(&mut self, name: Token) -> usize {
+        self.make_constant(Value::String(name.lexeme.to_string()))
     }
 
-    fn get_upvalue_index(&mut self, name: &str) -> Option<usize> {
-        for (i, scope) in self.scopes.iter_mut().enumerate().rev().skip(1) {
-            if scope.upvalues.contains_key(name) {
-                return Some(scope.upvalues[name].upvalue_index);
-            }
+    fn declare_variable(&mut self) {
+        if self.compiler.scope_depth == 0 {
+            return;
         }
-
-        for (i, scope) in self.scopes.iter_mut().enumerate().rev().skip(1) {
-            if scope.locals.contains_key(name) {
-                let local_index = scope.locals[name];
-                scope.upvalues.insert(name.to_string(), Upvalue {
-                    is_local: true,
-                    local_index: scope.locals[name],
-                    upvalue_index: self.upvalue_count,
-                });
-                self.upvalue_count += 1;
-                for scope in &mut self.scopes[i + 1..] {
-                    scope.upvalues.insert(name.to_string(), Upvalue {
-                        is_local: false,
-                        local_index,
-                        upvalue_index: self.upvalue_count - 1,
-                    });
-                }
-                return Some(self.upvalue_count - 1);
-            }
+        let name = self.previous;
+        if self.compiler.is_local_declared(name) {
+            self.error("Variable with this name already declared in this scope.");
         }
-        None
+        self.add_local(name);
     }
 
-    fn is_at_end(&self) -> bool {
-        self.peek() == &Token::Eof
+    fn add_local(&mut self, name: Token<'src>) {
+        let local = Local::new(name, -1);
+        self.compiler.locals.push(local);
+    }
+
+    fn is_lower_precedence(&self, precedence: Precedence) -> bool {
+        let current_precedence = self.get_rule(self.current.kind).precedence;
+        precedence <= current_precedence
+    }
+
+    fn consume(&mut self, expected: TokenType, message: &str) {
+        if self.current.kind == expected {
+            self.advance();
+            return;
+        }
+        self.error_at_current(message);
     }
 
     fn advance(&mut self) {
-        self.current += 1;
+        self.previous = self.current;
+        loop {
+            self.current = self.scanner.scan_token();
+            if self.current.kind != TokenType::Error {
+                break;
+            }
+            self.error_at_current(self.current.lexeme);
+        }
     }
 
-    fn check(&self, token: &Token) -> bool {
-        self.peek() == token
+    fn matches(&mut self, expected: TokenType) -> bool {
+        if !self.check(expected) {
+            return false;
+        }
+        self.advance();
+        true
     }
 
-    fn match_token(&mut self, token: Token) -> bool {
-        if self.check(&token) {
+    fn check(&self, expected: TokenType) -> bool {
+        self.current.kind == expected
+    }
+
+    fn error_at_current(&mut self, message: &str) {
+        self.error_at(self.current, message);
+    }
+
+    fn error(&mut self, message: &str) {
+        self.error_at(self.previous, message);
+    }
+
+    fn error_at(&mut self, token: Token, message: &str) {
+        if self.panic_mode {
+            return;
+        }
+        self.panic_mode = true;
+        eprint!("[line {}] Error", token.line);
+        match token.kind {
+            TokenType::Eof => eprint!(" at end"),
+            TokenType::Error => {}
+            _ => eprint!(" at '{}'", token.lexeme),
+        }
+        eprintln!(": {}", message);
+        self.had_error = true;
+    }
+
+    fn synchronize(&mut self) {
+        self.panic_mode = false;
+        while self.previous.kind != TokenType::Eof {
+            if self.previous.kind == TokenType::Semicolon {
+                return;
+            }
+            match self.current.kind {
+                TokenType::Class
+                | TokenType::Fn
+                | TokenType::Let
+                | TokenType::For
+                | TokenType::If
+                | TokenType::While
+                | TokenType::Print
+                | TokenType::Return => return,
+                _ => {}
+            }
             self.advance();
-            true
-        } else {
-            false
         }
     }
 
-    fn peek(&self) -> &Token {
-        &self.tokens[self.current]
+    fn emit(&mut self, instruction: Instruction) -> usize {
+        self.compiler.function.chunk.write(instruction, self.previous.line)
     }
 
-    fn peek_next(&self) -> &Token {
-        &self.tokens[self.current + 1]
+    fn emit_two(&mut self, instruction1: Instruction, instruction2: Instruction) -> usize {
+        self.emit(instruction1);
+        self.emit(instruction2)
     }
 
-    fn consume_token(&mut self, token: Token, message: &str) {
-        if self.check(&token) {
-            self.advance();
-        } else {
-            panic!("{} Expected {:?}. Got {:?}", message, token, self.peek());
+    fn emit_return(&mut self) {
+        match self.compiler.function_type {
+            FunctionType::Initializer => self.emit(Instruction::GetLocal(0)),
+            _ => self.emit(Instruction::Nil),
+        };
+        self.emit(Instruction::Return);
+    }
+
+    fn start_loop(&mut self) -> usize {
+        self.compiler.function.chunk.code.len()
+    }
+
+    fn emit_loop(&mut self, start: usize) {
+        let offset = self.start_loop() - start + 1;
+        self.emit(Instruction::Loop(offset));
+    }
+
+    fn patch_jump(&mut self, pos: usize) {
+        let offset = self.start_loop() - pos - 1;
+
+        match self.compiler.function.chunk.code[pos] {
+            Instruction::JumpIfFalse(ref mut o) => *o = offset,
+            Instruction::Jump(ref mut o) => *o = offset,
+            _ => panic!("Expected jump instruction."),
         }
     }
 
-    fn block(&mut self) -> Vec<Instruction> {
-        let mut instructions = vec![];
-
-        self.consume_token(Token::LeftBrace, "Expect '{' before block.");
-
-        while !self.check(&Token::RightBrace) && !self.is_at_end() {
-            instructions.extend(self.declaration());
-        }
-
-        self.consume_token(Token::RightBrace, "Expect '}' after block.");
-
-        instructions
+    fn make_constant(&mut self, value: Value) -> usize {
+        self.compiler.function.chunk.add_constant(value)
     }
 
-    fn consume_identifier(&mut self, message: &str) -> String {
-        let identifier = self.peek();
-
-        if let Token::Identifier(name) = identifier.clone() {
-            self.advance();
-            name
-        } else {
-            panic!("{} Expected identifier.", message);
-        }
+    fn emit_constant(&mut self, value: Value) {
+        let constant = self.make_constant(value);
+        self.emit(Instruction::Constant(constant));
     }
+
+    fn get_rule(&self, kind: TokenType) -> ParseRule<'src> {
+        self.rules.get(&kind).cloned().unwrap()
+    }
+
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::scanner::Scanner;
-    use super::*;
-
-    fn compile(source: &str) -> Program {
-        let mut scanner = Scanner::new(source);
-        scanner.scan_tokens();
-        let mut compiler = Compiler::new(scanner.tokens);
-        compiler.compile()
-    }
-
-    #[test]
-    fn test_let_statements() {
-        let program = compile("let x = 5;");
-        assert_eq!(program, Program {
-            instructions: vec![
-                Instruction::Constant(0),
-                Instruction::DefineGlobal(0),
-                Instruction::Halt,
-            ],
-            constants: vec![
-                Value::Number(5.0),
-            ],
-            global_count: 1
-        });
-    }
-
-    #[test]
-    fn test_let_statements_2() {
-        let program = compile("let x = 5; let y = 10;");
-        assert_eq!(program, Program {
-            instructions: vec![
-                Instruction::Constant(0),
-                Instruction::DefineGlobal(0),
-                Instruction::Constant(1),
-                Instruction::DefineGlobal(1),
-                Instruction::Halt,
-            ],
-            constants: vec![
-                Value::Number(5.0),
-                Value::Number(10.0),
-            ],
-            global_count: 2
-        });
-    }
+pub fn compile(source: &str) -> Result<Function, ()> {
+    let parser = Parser::new(source);
+    parser.compile()
 }

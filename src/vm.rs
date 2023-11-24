@@ -1,28 +1,31 @@
+use std::any::Any;
 use std::collections::HashMap;
-use crate::class::Class;
-use crate::compiler::Program;
+use std::fmt;
+use std::marker::PhantomData;
+use std::os::unix::process::parent_id;
+use crate::class::{Class, ClassRef};
 use crate::frame::CallFrame;
 use crate::function::Function;
 use crate::instance::Instance;
 use crate::instruction::Instruction;
-use crate::value::Value;
-use core::any::Any;
-use std::cell::RefCell;
-use std::rc::Rc;
+use crate::value::{InstanceRef, UpvalueRegistryRef, Value};
 
-type Heap = HashMap<usize, Box<dyn Collectable>>;
-
-pub struct VM {
-    pub(crate) call_stack: Vec<CallFrame>,
-    pub(crate) stack: Vec<Value>,
-    globals: Vec<Option<Value>>,
-    constants: Vec<Value>,
-    pub(crate) heap: Heap,
+struct Heap {
+    objects: HashMap<usize, Box<dyn Collectable>>,
     next_id: usize,
 }
 
+
+impl Heap {
+    fn new() -> Heap {
+        Heap {
+            objects: HashMap::new(),
+            next_id: 0,
+        }
+    }
+}
+
 pub trait Collectable: Any {
-    fn collect(&self) -> Vec<usize>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn to_string(&self, _: &VM) -> Option<String> {
@@ -30,61 +33,39 @@ pub trait Collectable: Any {
     }
 }
 
-impl Collectable for Instance {
-    fn collect(&self) -> Vec<usize> {
-        let mut ids = vec![];
-
-        for (_, value) in &self.fields {
-            if let Value::Instance(id) = value {
-                ids.push(*id);
-            }
-        }
-
-        ids
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
+pub struct VM {
+    stack: Vec<Value>,
+    frames: Vec<CallFrame>,
+    globals: HashMap<String, Value>,
+    open_upvalues: Vec<UpvalueRegistryRef>,
+    heap: Heap,
 }
 
 impl VM {
-    pub fn new(program: Program) -> VM {
-        let global_frame = CallFrame {
-            function: Function {
-                instructions: program.instructions,
-                arity: 0,
-                upvalues: HashMap::new(),
-            },
-            ip: 0,
-            base_pointer: 0,
-        };
-
-        let mut vm = VM {
-            call_stack: vec![global_frame],
-            stack: vec![],
-            globals: vec![],
-            constants: program.constants,
-            heap: HashMap::new(),
-            next_id: 0,
-        };
-
-        vm.globals.resize(program.global_count, None);
-
-        vm
+    pub fn new() -> VM {
+        VM {
+            stack: Vec::new(),
+            frames: Vec::new(),
+            globals: HashMap::new(),
+            open_upvalues: Vec::new(),
+            heap: Heap::new(),
+        }
     }
 
-    pub fn run(&mut self) -> Value {
+    pub fn interpret(&mut self, function: Function) {
+        let closure = Value::Closure(function, Vec::new());
+        self.push(closure.clone());
+        self.call_value(closure, 0);
+        self.run();
+    }
+
+    fn run(&mut self) {
         macro_rules! binary_op {
             ($op:tt, $type:tt) => {
                 let b = self.pop();
                 let a = self.pop();
 
-                if let (Value::Number(a), Value::Number(b)) = (a, b) {
+                if let (Value::Number(a), Value::Number(b)) = (a.clone(), b.clone()) {
                     self.push(Value::$type(a $op b ));
                 } else {
                     panic!("Invalid operands for binary operation.");
@@ -93,349 +74,453 @@ impl VM {
         }
 
         loop {
-            let frame = self.call_stack.last_mut().unwrap();
-
-            let instruction = frame.function.instructions[frame.ip];
-
-            frame.ip += 1;
+            let instruction: Instruction = self.get_current_instruction();
+            //dbg!(self.stack.clone());
+            //dbg!(instruction.clone());
+            self.frame_mut().ip += 1;
 
             match instruction {
                 Instruction::Constant(index) => {
-                    self.push(self.constants[index].clone());
+                    let constant = self.read_constant(index).clone();
+                    self.stack.push(constant);
                 }
-                Instruction::Negate => {
-                    let value = self.pop();
-
-                    if let Value::Number(value) = value {
-                        self.push(Value::Number(-value));
-                    } else {
-                        panic!("Invalid operand for negation.");
-                    }
+                Instruction::Nil => self.stack.push(Value::Nil),
+                Instruction::True => self.stack.push(Value::Boolean(true)),
+                Instruction::False => self.stack.push(Value::Boolean(false)),
+                Instruction::Pop => { self.stack.pop(); },
+                Instruction::GetGlobal(index) => self.get_global(index),
+                Instruction::DefineGlobal(index) => self.define_global(index),
+                Instruction::SetGlobal(index) => self.set_global(index),
+                Instruction::GetLocal(index) => self.get_local(index),
+                Instruction::SetLocal(index) => self.set_local(index),
+                Instruction::GetUpvalue(index) => self.get_upvalue(index),
+                Instruction::SetUpvalue(index) => self.set_upvalue(index),
+                Instruction::GetProperty(index) => self.get_property(index),
+                Instruction::SetProperty(index) => self.set_property(index),
+                Instruction::GetSuper(index) => self.get_super(index),
+                Instruction::Equal => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.pop().unwrap();
+                    self.stack.push(Value::Boolean(a == b));
                 }
+                Instruction::Greater => { binary_op!(>, Boolean); },
+                Instruction::Less => { binary_op!(<, Boolean); },
+                Instruction::Subtract => { binary_op!(-, Number); },
+                Instruction::Multiply => { binary_op!(*, Number); },
+                Instruction::Divide => { binary_op!(/, Number); },
                 Instruction::Add => {
-                    let b = self.pop();
-                    let a = self.pop();
-
-                    if let (Value::Number(a), Value::Number(b)) = (a.clone(), b.clone()) {
-                        self.push(Value::Number(a + b));
-                    } else if let Value::String(a) = a {
-                        self.push(Value::String(a + &b.to_string(self)));
-                    } else if let Value::String(b) = b {
-                        self.push(Value::String(a.to_string(self) + &b));
-                    } else {
-                        panic!("Invalid operands for addition.");
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.pop().unwrap();
+                    match (a, b) {
+                        (Value::Number(a), Value::Number(b)) => self.stack.push(Value::Number(a + b)),
+                        (Value::String(a), Value::String(b)) => self.stack.push(Value::String(a + &b)),
+                        _ => panic!("Operands must be two numbers or two strings."),
                     }
-                }
-                Instruction::Subtract => {
-                    binary_op!(-, Number);
-                }
-                Instruction::Multiply => {
-                    binary_op!(*, Number);
-                }
-                Instruction::Divide => {
-                    binary_op!(/, Number);
                 }
                 Instruction::Not => {
-                    let value = self.pop();
-
-                    if let Value::Boolean(value) = value {
-                        self.push(Value::Boolean(!value));
+                    let value = self.stack.pop().unwrap();
+                    self.stack.push(Value::Boolean(value.is_falsey()));
+                }
+                Instruction::Negate => {
+                    let value = self.stack.pop().unwrap();
+                    if let Value::Number(value) = value {
+                        self.stack.push(Value::Number(-value));
                     } else {
-                        panic!("Invalid operand for not operation.");
+                        panic!("Operand must be a number.");
                     }
                 }
-                Instruction::Equal => {
-                    let b = self.pop();
-                    let a = self.pop();
-
-                    self.push(Value::Boolean(a == b));
+                Instruction::Print => {
+                    println!("{}", self.stack.pop().unwrap());
                 }
-                Instruction::NotEqual => {
-                    let b = self.pop();
-                    let a = self.pop();
-
-                    self.push(Value::Boolean(a != b));
-                }
-                Instruction::Greater => {
-                    binary_op!(>, Boolean);
-                },
-                Instruction::GreaterEqual => {
-                    binary_op!(>=, Boolean);
-                },
-                Instruction::Less => {
-                    binary_op!(<, Boolean);
-                },
-                Instruction::LessEqual => {
-                    binary_op!(<=, Boolean);
-                },
                 Instruction::Jump(offset) => {
-                    frame.ip += offset - 1;
+                    self.frame_mut().ip += offset;
                 }
                 Instruction::JumpIfFalse(offset) => {
-                    let value = self.stack.pop().unwrap();
-
+                    let value = self.peek(0).unwrap();
                     if value.is_falsey() {
-                        frame.ip += offset - 1;
+                        self.frame_mut().ip += offset;
                     }
                 }
-                Instruction::JumpBack(offset) => {
-                    frame.ip -= offset + 1;
+                Instruction::Loop(offset) => {
+                    self.frame_mut().ip -= offset;
                 }
-                Instruction::Pop => {
-                    self.pop();
-                },
-                Instruction::GetGlobal(index) => {
-                    let value = self.globals[index].clone();
-
-                    if let Some(value) = value {
-                        self.push(value);
-                    } else {
-                        panic!("Undefined variable.");
-                    }
-                },
-                Instruction::SetGlobal(index) => {
-                    let value = self.peek(1);
-
-                    if self.globals[index].is_none() {
-                        panic!("Undefined variable.");
-                    } else {
-                        self.globals[index] = Some(value);
-                    }
-                },
-                Instruction::DefineGlobal(index) => {
-                    let value = self.pop();
-
-                    self.globals[index] = Some(value);
-                },
-                Instruction::GetLocal(index) => {
-                    let value = self.stack[frame.base_pointer + index].clone();
-
-                    self.push(value);
-                },
-                Instruction::SetLocal(index) => {
-                    let value = self.stack.last().unwrap().clone();
-
-                    self.stack[frame.base_pointer + index] = value;
-                },
-                Instruction::GetProperty(index) => {
-                    let name = self.constants[index].clone();
-                    let instance = self.pop();
-
-                    if let (Value::Instance(instance), Value::String(name)) = (instance.clone(), name) {
-                        let instance = self.get_instance(instance).unwrap();
-                        if let Some(value) = instance.fields.get(&name) {
-                            self.push(value.clone());
-                        } else {
-                            let method = self.get_method(instance, name);
-                            self.push(method);
-                        }
-                    } else {
-                        panic!("Cannot get property of non-object.");
-                    }
-                },
-                Instruction::SetProperty(index) => {
-                    let name = self.constants[index].clone();
-                    let value = self.pop();
-                    let instance = self.peek(1);
-
-                    if let (Value::Instance(instance), Value::String(name)) = (instance, name) {
-                        let instance = self.get_instance_mut(instance).unwrap();
-                        instance.fields.insert(name, value);
-                    } else {
-                        panic!("Cannot set property of non-object.");
-                    }
-                },
-                Instruction::MakeUpvalue(upvalue_index, local_index) => {
-                    let value = self.stack[frame.base_pointer + local_index].clone();
-                    frame.function.upvalues.insert(upvalue_index, self.next_id);
-                    self.new_collectable(value);
-                },
-                Instruction::GetUpvalue(upvalue_index) => {
-                    let closure = frame.function.clone();
-                    let upvalue = closure.upvalues[&upvalue_index].clone();
-                    let value = self.get_collectable::<Value>(upvalue).unwrap();
-                    self.push(value.clone());
-                },
-                Instruction::SetUpvalue(upvalue_index) => {
-                    let value = self.stack.last().unwrap().clone();
-                    let closure = frame.function.clone();
-                    let upvalue = closure.upvalues[&upvalue_index].clone();
-                    self.set_collectable(upvalue, value);
-                },
-                Instruction::MakeClosure => {
-                    let function = self.pop();
-                    let frame_closure = self.call_stack.last().unwrap().function.clone();
-                    if let Value::Function(mut function) = function {
-                        for (index, upvalue) in frame_closure.upvalues.iter() {
-                            function.upvalues.insert(*index,*upvalue);
-                        }
-
-                        self.push(Value::Function(function));
-                    } else {
-                        panic!("Cannot make closure of non-function.");
-                    }
-                },
                 Instruction::Call(arg_count) => {
-                    let function = self.peek(arg_count + 1);
-                    if let Value::Function(function) = function {
-                        if function.arity != arg_count {
-                            panic!("Expected {} arguments but got {}.", function.arity, arg_count);
+                    self.call_value_from_stack(arg_count);
+                }
+                Instruction::Invoke(index, arg_count) => {
+                    let name = self.read_string(index);
+                    self.invoke(name, arg_count);
+                }
+                Instruction::SuperInvoke(index, arg_count) => {
+                    let name = self.read_string(index);
+                    let superclass = self.stack.pop().unwrap();
+                    match superclass {
+                        Value::Class(class) => {
+                            self.invoke_from_class(class, name, arg_count);
                         }
-
-                        let base_pointer = self.stack.len() - arg_count;
-                        self.call_stack.push(CallFrame {
-                            function,
-                            base_pointer,
-                            ip: 0,
-                        });
-                    } else if let Value::Native(function) = function {
-                        let mut args = Vec::with_capacity(arg_count);
-                        for _ in 0..arg_count {
-                            args.push(self.pop());
-                        }
-                        self.pop();
-                        let result = (function.function)(args.into_iter().rev().collect(), self);
-                        self.push(result);
-                    } else if let Value::Class(class) = function {
-                        let value = self.new_instance(Instance::new(class.clone()));
-                        let l = self.stack.len();
-                        self.stack[l - arg_count - 1] = value.clone();
-                        let init = class.methods.get("init");
-                        if let Some(Value::Function(init)) = init {
-                            let args = self.stack.split_off(l - arg_count);
-                            self.push(value.clone());
-                            self.stack.extend(args);
-                            self.call_stack.push(CallFrame {
-                                function: init.clone(),
-                                base_pointer: self.stack.len() - arg_count - 1,
-                                ip: 0,
-                            });
-                        } else if let Some(Value::Native(init)) = init {
-                            let mut args = Vec::with_capacity(arg_count + 1);
-                            for _ in 0..arg_count {
-                                args.push(self.pop());
-                            }
-                            args.push(value.clone());
-                            self.pop();
-                            (init.function)(args.into_iter().rev().collect(), self);
-                            self.push(value);
-                        } else if arg_count != 0 {
-                            panic!("Expected 0 arguments, got {}.", arg_count);
-                        }
-                    } else {
-                        panic!("Cannot call non-function.");
+                        _ => panic!("Only classes have superclass."),
                     }
-                },
+                }
+                Instruction::Closure(index) => self.make_closure(index),
+                Instruction::CloseUpvalue => {
+                    let index = self.stack.len().checked_sub(1).unwrap();
+                    self.close_upvalues(index);
+                    self.stack.pop();
+                }
                 Instruction::Return => {
-                    let return_value = self.pop();
-                    let call_frame = self.call_stack.pop().unwrap();
-                    self.stack.truncate(call_frame.base_pointer);
-                    if !self.call_stack.is_empty() {
-                        let function = self.pop();
-                        if let Value::Function(function) = function {
-                            self.push(return_value);
-                        } else if let Value::Instance(instance) = function {
-                            self.push(Value::Instance(instance));
-                        } else {
-                            panic!("Cannot return from non-function.");
-                        }
-
-                    } else {
-                        return return_value;
+                    let base = self.frame().base;
+                    let result = self.stack.pop().unwrap();
+                    self.close_upvalues(base);
+                    self.frames.pop();
+                    if self.frames.is_empty() {
+                        self.stack.pop();
+                        return;
                     }
-                },
-                Instruction::Invoke(arg_count) => {
-                    let name = self.pop();
-                    let instance = self.pop();
-
-                    if let (Value::String(name), Value::Instance(i)) = (name, instance) {
-                        let instance = self.get_instance(i).unwrap();
-                        let method = if let Value::Function(method) = self.get_method(instance, name) {
-                            method
-                        } else {
-                            panic!("Undefined method.");
-                        };
-                        self.push(Value::Function(method.clone()));
-                        self.push(Value::Instance(i));
-                        self.call_stack.push(CallFrame {
-                            function: method,
-                            base_pointer: self.stack.len() - arg_count - 1,
-                            ip: 0,
-                        });
-                    } else {
-                        panic!("Cannot invoke non-method.");
-                    }
-                },
-                Instruction::GetSuper(index) => {
-                    let name = self.constants[index].clone();
-                    let superclass = self.pop();
-
-                    if let (Value::String(name), Value::Class(superclass)) = (name, superclass) {
-                        let method = if let Some(Value::Function(method)) = superclass.methods.get(&name) {
-                            method.clone()
-                        } else {
-                            panic!("Undefined method '{}'.", name);
-                        };
-                        self.push(Value::Function(method.clone()));
-                    } else {
-                        panic!("Cannot get super of non-class.");
-                    }
-                },
-                Instruction::False => {
-                    self.push(Value::Boolean(false));
-                },
-                Instruction::True => {
-                    self.push(Value::Boolean(true));
-                },
-                Instruction::Nil => {
-                    self.push(Value::Nil);
-                },
-                Instruction::And => {
-                    let right = self.pop();
-                    let left = self.pop();
-                    if left.is_falsey() {
-                        self.push(left);
-                    } else {
-                        self.push(right);
-                    }
-                },
-                Instruction::Or => {
-                    let right = self.pop();
-                    let left = self.pop();
-
-                    if left.is_truthy() {
-                        self.push(left);
-                    } else {
-                        self.push(right);
-                    }
-                },
-                Instruction::Print => {
-                    let value = self.pop();
-                    println!("{}", value.to_string(self));
-                },
-                Instruction::Halt => {
-                    return Value::Nil;
-                },
+                    self.stack.truncate(base);
+                    self.stack.push(result);
+                }
+                Instruction::Class(index) => {
+                    let name = self.read_string(index);
+                    let class = Class::new(name);
+                    let value = self.new_class(class);
+                    self.stack.push(value);
+                }
                 Instruction::Inherit => {
-                    let subclass = self.pop();
-                    let superclass = self.pop();
-
-                    if let (Value::Class(superclass), Value::Class(mut subclass)) = (superclass, subclass) {
-                        for method in superclass.methods {
-                            subclass.methods.insert(method.0, method.1);
+                    if let (Value::Class(mut subclass_ref), Value::Class(superclass_ref)) =
+                        (self.stack.pop().unwrap(), self.peek(0).unwrap()) {
+                        let superclass = self.get_class(*superclass_ref).unwrap().clone();
+                        let mut subclass = self.get_class_mut(subclass_ref).unwrap();
+                        for (name, method) in &superclass.methods {
+                            subclass.methods.insert(name.clone(), method.clone());
                         }
-                        self.push(Value::Class(subclass));
                     } else {
-                        panic!("Cannot inherit from non-class.");
+                        panic!("Superclass must be a class.");
                     }
-                },
+                }
+                Instruction::Method(index) => self.define_method(index),
             }
         }
-
     }
 
-    fn peek(&self, distance: usize) -> Value {
-        self.stack[self.stack.len() - distance].clone()
+    fn get_current_instruction(&self) -> Instruction {
+        let frame = self.frame();
+        frame.chunk().code[frame.ip].clone()
+    }
+
+    fn frame(&self) -> &CallFrame {
+        self.frames.last().unwrap()
+    }
+
+    fn frame_mut(&mut self) -> &mut CallFrame {
+        self.frames.last_mut().unwrap()
+    }
+
+    fn read_constant(&self, index: usize) -> &Value {
+        let frame = self.frame();
+        frame.chunk().read_constant(index)
+    }
+
+    fn peek(&self, distance: usize) -> Option<&Value> {
+        let index = self.stack.len().checked_sub(1 + distance)?;
+        self.stack.get(index)
+    }
+
+    fn read_string(&self, index: usize) -> String {
+        let value = self.read_constant(index);
+        match value {
+            Value::String(string) => string.clone(),
+            _ => panic!("Value is not a string."),
+        }
+    }
+
+    fn get_global(&mut self, index: usize) {
+        let name = self.read_string(index);
+        if let Some(value) = self.globals.get(&name) {
+            self.stack.push(value.clone());
+        } else {
+            panic!("Undefined variable '{}'.", name);
+        }
+    }
+
+    fn define_global(&mut self, index: usize) {
+        let name = self.read_string(index);
+        let value = self.stack.pop().unwrap();
+        self.globals.insert(name, value);
+    }
+
+    fn set_global(&mut self, index: usize) {
+        let name = self.read_string(index);
+        if self.globals.contains_key(&name) {
+            let value = self.peek(0).unwrap().clone();
+            self.globals.insert(name, value);
+        } else {
+            panic!("Undefined variable '{}'.", name);
+        }
+    }
+
+    fn get_local(&mut self, index: usize) {
+        let base = self.frame().base;
+        let value = self.stack[base + index].clone();
+        self.stack.push(value);
+    }
+
+    fn set_local(&mut self, index: usize) {
+        let base = self.frame().base;
+        let value = self.peek(0).unwrap().clone();
+        self.stack[base + index] = value;
+    }
+
+    fn make_closure(&mut self, index: usize) {
+        let constant = self.read_constant(index).clone();
+        if let Value::Function(function) = constant {
+            let mut upvalues = Vec::new();
+            let upvals = function.upvalues.clone();
+            for FunctionUpvalue { is_local, index } in upvals {
+                upvalues.push(if is_local {
+                    self.capture_upvalue(self.frame().base + index)
+                } else {
+                    self.frame().get_upvalue(index)
+                });
+            }
+
+            let closure = Value::Closure(function, upvalues);
+            self.stack.push(closure);
+        } else {
+            panic!("Value is not a function.");
+        }
+    }
+
+    fn capture_upvalue(&mut self, index: usize) -> UpvalueRegistryRef {
+        if let Some(upvalue) = self.open_upvalues.iter().find(|upvalue| matches!(self.get_collectable::<UpvalueRegistry>(**upvalue), Some(&UpvalueRegistry::Open(i)) if i == index)) {
+            upvalue.clone()
+        } else {
+            let upvalue = UpvalueRegistry::Open(index);
+            let upvalue_ref = self.new_collectable(upvalue);
+            self.open_upvalues.push(upvalue_ref);
+            upvalue_ref
+        }
+    }
+
+    fn get_upvalue(&mut self, index: usize) {
+        let upvalue_ref = self.frame().get_upvalue(index);
+        let upvalue = self.get_collectable::<UpvalueRegistry>(upvalue_ref).unwrap().clone();
+        match upvalue {
+            UpvalueRegistry::Open(index) => {
+                let value = self.stack[index].clone();
+                self.stack.push(value);
+            }
+            UpvalueRegistry::Closed(value) => {
+                self.stack.push(value);
+            }
+        }
+    }
+
+    fn set_upvalue(&mut self, index: usize) {
+        let value = self.peek(0).unwrap().clone();
+        let upvalue_ref = self.frame_mut().get_upvalue(index);
+        let upvalue = self.get_collectable_mut::<UpvalueRegistry>(upvalue_ref).unwrap();
+        match upvalue {
+            UpvalueRegistry::Open(index) => {
+                let index = *index;
+                self.stack[index] = value;
+            }
+            UpvalueRegistry::Closed(ref mut cell) => {
+                *cell = value;
+            }
+        }
+    }
+
+    fn close_upvalues(&mut self, index: usize) {
+        while let Some(upvalue_ref) = self.open_upvalues.last() {
+            let upvalue = self.get_collectable::<UpvalueRegistry>(*upvalue_ref).unwrap();
+            let slot = if let UpvalueRegistry::Open(slot) = upvalue {
+                if *slot <= index {
+                    break;
+                }
+                *slot
+            } else {
+                panic!("Expected open upvalue.");
+            };
+            let upvalue_ref = self.open_upvalues.pop().unwrap();
+            let value = self.stack[slot].clone();
+            let upvalue = self.get_collectable_mut::<UpvalueRegistry>(upvalue_ref).unwrap();
+            upvalue.close(value);
+        }
+    }
+
+    fn get_property(&mut self, index: usize) {
+        let name = self.read_string(index);
+        let instance = self.stack.pop().unwrap();
+        match instance {
+            Value::Instance(instance_ref) => {
+                let instance = self.get_collectable::<Instance>(instance_ref).unwrap().clone();
+                if let Some(value) = instance.fields.get(&name) {
+                    self.stack.push(value.clone());
+                } else {
+                    self.bind_method(instance.class, instance_ref, name);
+                }
+            }
+            _ => panic!("Only instances have properties."),
+        }
+    }
+
+    fn bind_method(&mut self, class: ClassRef, instance: InstanceRef, name: String) {
+        let class = self.get_class(class).unwrap().clone();
+        if let Some(method) = class.methods.get(&name) {
+            let (function, upvalues) = match method {
+                Value::Function(f) => (f, Vec::new()),
+                Value::Closure(f, u) => (f, u.clone()),
+                _ => panic!("Expected function or closure."),
+            };
+
+            self.stack.push(Value::BoundMethod {
+                receiver: instance,
+                function: function.clone(),
+                upvalues,
+            });
+        } else {
+            panic!("Undefined property '{}'.", name);
+        }
+    }
+
+    fn set_property(&mut self, index: usize) {
+        let name = self.read_string(index);
+        let value = self.pop().clone();
+        let instance = self.pop().clone();
+
+        match instance {
+            Value::Instance(instance_ref) => {
+                let mut instance = self.get_collectable_mut::<Instance>(instance_ref).unwrap();
+                instance.fields.insert(name, value.clone());
+            }
+            _ => panic!("Only instances have fields."),
+        }
+        self.push(value);
+    }
+
+    fn get_super(&mut self, index: usize) {
+        let (this_val, super_val) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
+        if let (Value::Class(super_class), Value::Instance(this)) = (super_val, this_val) {
+            let name = self.read_string(index);
+            self.bind_method(super_class, this, name);
+        } else {
+            panic!("Superclass must be a class.")
+        }
+    }
+
+    fn define_method(&mut self, index: usize) {
+        let method = self.stack.pop().unwrap();
+        let class = self.peek(0).unwrap().clone();
+        if let Value::Class(class) = class {
+            let name = self.read_string(index);
+            let class = self.get_class_mut(class).unwrap();
+            class.methods.insert(name, method);
+        } else {
+            panic!("Expected class.");
+        }
+    }
+
+    fn invoke(&mut self, method: String, arg_count: usize) {
+        let receiver = self.peek(arg_count).unwrap().clone();
+        match receiver {
+            Value::Instance(instance_ref) => {
+                let instance = self.get_collectable::<Instance>(instance_ref).unwrap().clone();
+                if let Some(method) = instance.fields.get(&method) {
+                    let l = self.stack.len();
+                    self.stack[l - arg_count - 1] = method.clone();
+                    self.call_value_from_stack(arg_count);
+                } else {
+                    let class = instance.class;
+                    self.invoke_from_class(class, method, arg_count);
+                }
+            }
+            _ => panic!("Only instances have methods."),
+        }
+    }
+
+    fn invoke_from_class(&mut self, class: ClassRef, method: String, arg_count: usize) {
+        let class = self.get_class(class).unwrap().clone();
+        if let Some(method) = class.methods.get(&method) {
+            self.call_value(method.clone(), arg_count);
+        } else {
+            panic!("Undefined property '{}'.", method);
+        }
+    }
+
+    fn call_value(&mut self, callee: Value, arg_count: usize) {
+        match callee {
+            Value::Closure(function, upvalues) => {
+                self.call(function, upvalues, arg_count);
+            }
+            Value::Function(function) => {
+                self.call(function, Vec::new(), arg_count);
+            }
+            Value::Class(class) => {
+                let instance = Instance::new(class.clone());
+                let instance_ref = self.new_collectable(instance);
+                let value = Value::Instance(instance_ref);
+                let l = self.stack.len();
+                self.stack[l - arg_count - 1] = value;
+
+                let class = self.get_class(class).unwrap().clone();
+                if let Some(init) = class.methods.get("init") {
+                    match init {
+                        Value::Closure(function, upvalues) => {
+                            self.call(function.clone(), upvalues.clone(), arg_count);
+                        }
+                        Value::Function(function) => {
+                            self.call(function.clone(), Vec::new(), arg_count);
+                        }
+                        _ => panic!("Expected function."),
+                    }
+                } else if arg_count != 0 {
+                    panic!("Expected 0 arguments but got {}.", arg_count);
+                }
+            }
+            Value::BoundMethod {
+                receiver,
+                function,
+                upvalues,
+            } => {
+                let l = self.stack.len();
+                self.stack[l - arg_count - 1] = Value::Instance(receiver);
+                self.call(function, upvalues, arg_count);
+            }
+            Value::NativeFunction(function) => {
+                let from = self.stack.len() - arg_count;
+                let args = self.stack[from..].to_vec();
+                let result = (function.function)(args, self);
+                self.pop_many(arg_count + 1);
+                self.stack.push(result);
+            }
+            _ => panic!("Can only call functions and classes."),
+        }
+    }
+
+    fn call_value_from_stack(&mut self, arg_count: usize) {
+        let callee = self.peek(arg_count).unwrap().clone();
+        self.call_value(callee, arg_count);
+    }
+
+    fn call(&mut self, function: Function, upvalues: Vec<UpvalueRegistryRef>, arg_count: usize) {
+        if arg_count != function.arity {
+            panic!(
+                "Expected {} arguments but got {}.",
+                function.arity, arg_count
+            );
+        }
+        self.frames.push(CallFrame {
+            function,
+            ip: 0,
+            base: self.stack.len() - arg_count - 1,
+            upvalues,
+        });
+    }
+
+    fn pop_many(&mut self, count: usize) {
+        for _ in 0..count {
+            self.stack.pop();
+        }
     }
 
     fn pop(&mut self) -> Value {
@@ -446,99 +531,114 @@ impl VM {
         self.stack.push(value);
     }
 
-    fn get_method(&self, instance: &Instance, name: String) -> Value {
-        if let Some(value) = instance.class.methods.get(&name) {
-            return value.clone();
-        } else {
-            panic!("Undefined property {}.", name);
-        }
-    }
-
-
-    pub fn mark_and_sweep(&mut self) {
-        // Step 1: Mark
-        let mut marked = vec![];
-        for value in self.stack.clone() {
-            if let Value::Instance(id) = value {
-                marked.push(id);
-            }
-        }
-        let mut swap = marked.clone();
-        let mut current = vec![];
-        loop {
-            for a in &swap {
-                if let Some(instance) = self.heap.get(a) {
-                    match self.get_instance(*a) {
-                        Some(instance) => {
-                            for (_, value) in &instance.fields {
-                                if let Value::Instance(id) = value {
-                                    if !marked.contains(id) {
-                                        current.push(*id);
-                                    }
-                                }
-                            }
-                        },
-                        None => (),
-                    }
-                }
-            }
-            if !current.is_empty() {
-                marked.append(&mut current);
-                swap = current.clone();
-                current.clear();
-            } else {
-                break;
-            }
-        }
-
-
-        // Step 2: Sweep
-        self.heap.retain(|id, _| marked.contains(id));
-    }
-
     pub fn new_instance(&mut self, instance: Instance) -> Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.heap.insert(id, Box::new(instance));
+        let id = self.heap.next_id;
+        self.heap.next_id += 1;
+        self.heap.objects.insert(id, Box::new(instance));
         Value::Instance(id)
     }
 
     pub fn get_instance(&self, id: usize) -> Option<&Instance> {
-        match self.heap.get(&id) {
+        match self.heap.objects.get(&id) {
             Some(collectable) => collectable.as_any().downcast_ref::<Instance>(),
             None => None,
         }
     }
 
     pub(crate) fn get_instance_mut(&mut self, id: usize) -> Option<&mut Instance> {
-        match self.heap.get_mut(&id) {
+        match self.heap.objects.get_mut(&id) {
             Some(collectable) => collectable.as_any_mut().downcast_mut::<Instance>(),
             None => None,
         }
     }
 
+    pub(crate) fn new_class(&mut self, class: Class) -> Value {
+        let id = self.heap.next_id;
+        self.heap.next_id += 1;
+        self.heap.objects.insert(id, Box::new(class));
+        Value::Class(id)
+    }
+
+    pub(crate) fn get_class(&self, id: usize) -> Option<&Class> {
+        match self.heap.objects.get(&id) {
+            Some(collectable) => collectable.as_any().downcast_ref::<Class>(),
+            None => None,
+        }
+    }
+
+    pub(crate) fn get_class_mut(&mut self, id: usize) -> Option<&mut Class> {
+        match self.heap.objects.get_mut(&id) {
+            Some(collectable) => collectable.as_any_mut().downcast_mut::<Class>(),
+            None => None,
+        }
+    }
+
     pub fn get_collectable<T: Collectable>(&self, id: usize) -> Option<&T> {
-        match self.heap.get(&id) {
+        match self.heap.objects.get(&id) {
             Some(collectable) => collectable.as_any().downcast_ref::<T>(),
             None => None,
         }
     }
 
     pub fn get_collectable_mut<T: Collectable>(&mut self, id: usize) -> Option<&mut T> {
-        match self.heap.get_mut(&id) {
+        match self.heap.objects.get_mut(&id) {
             Some(collectable) => collectable.as_any_mut().downcast_mut::<T>(),
             None => None,
         }
     }
 
-    pub fn set_collectable<T: Collectable>(&mut self, id: usize, collectable: T) {
-        self.heap.insert(id, Box::new(collectable));
-    }
-
     pub fn new_collectable<T: Collectable>(&mut self, collectable: T) -> usize {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.heap.insert(id, Box::new(collectable));
+        let id = self.heap.next_id;
+        self.heap.next_id += 1;
+        self.heap.objects.insert(id, Box::new(collectable));
         id
     }
+
+}
+
+#[derive(Clone)]
+pub enum UpvalueRegistry {
+    Open(usize),
+    Closed(Value),
+}
+
+impl Collectable for UpvalueRegistry {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl UpvalueRegistry {
+    fn close(&mut self, value: Value) {
+        *self = UpvalueRegistry::Closed(value);
+    }
+}
+
+impl fmt::Debug for UpvalueRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UpvalueRegistry::Open(index) => write!(f, "UpvalueRef::Open({})", index),
+            UpvalueRegistry::Closed(value) => write!(f, "UpvalueRef::Closed({:?})", value),
+        }
+    }
+}
+
+impl PartialEq for UpvalueRegistry {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (UpvalueRegistry::Open(index1), UpvalueRegistry::Open(index2)) => index1 == index2,
+            (UpvalueRegistry::Closed(value1), UpvalueRegistry::Closed(value2)) => value1 == value2,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FunctionUpvalue {
+    pub index: usize,
+    pub is_local: bool,
 }

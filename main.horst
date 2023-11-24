@@ -1,13 +1,41 @@
-fn f() {
-    let x = 1;
-    let g = fn () {
-        x = x + 1;
-        return x;
-    };
-    return g;
+class Array {
+    init(length) {
+        this.length = length;
+        this.first = nil;
+        this.second = nil;
+        this.third = nil;
+    }
+
+    get(index) {
+        if (index == 0) {
+            return this.first;
+        } else if (index == 1) {
+            return this.second;
+        } else if (index == 2) {
+            return this.third;
+        } else {
+            return nil;
+        }
+    }
+
+    set(index, value) {
+        if (index == 0) {
+            this.first = value;
+        } else if (index == 1) {
+            this.second = value;
+        } else if (index == 2) {
+            this.third = value;
+        }
+    }
+
+    toString() {
+        print(this.first);
+    }
 }
 
-let g = f();
-print g();
-print g();
-print g();
+let array = [1, 2];
+// let array = Array(2)
+// array.set(0, 1)
+// array.set(1, 2)
+array[0] = 100;
+print array[0];

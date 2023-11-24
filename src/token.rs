@@ -47,4 +47,7 @@ pub enum Token {
 
     // End of file
     Eof,
+
+    // Error
+    Error,
 }

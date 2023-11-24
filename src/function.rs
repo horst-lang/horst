@@ -1,16 +1,19 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
+use crate::frame::Chunk;
 use crate::instruction::Instruction;
 use crate::value::Value;
-use crate::vm::VM;
+use crate::vm::{FunctionUpvalue, VM};
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Function {
-    pub instructions: Vec<Instruction>,
+    pub name: String,
     pub arity: usize,
-    pub upvalues: HashMap<usize, usize>,
+    pub chunk: Chunk,
+    pub upvalues: Vec<FunctionUpvalue>,
 }
+
 
 #[derive(Clone)]
 pub struct NativeFunction {
@@ -39,11 +42,12 @@ impl fmt::Debug for NativeFunction {
 
 
 impl Function {
-    pub fn new(instructions: Vec<Instruction>, arity: usize) -> Function {
+    pub fn new<S: Into<String>>(name: S, arity: usize, chunk: Chunk) -> Function {
         Function {
-            instructions,
+            name: name.into(),
             arity,
-            upvalues: HashMap::new(),
+            chunk,
+            upvalues: Vec::new(),
         }
     }
 }

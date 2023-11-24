@@ -1,14 +1,14 @@
-mod token;
+pub mod token;
 pub mod scanner;
 pub mod compiler;
-mod instruction;
+pub mod instruction;
 pub mod value;
-mod function;
-mod frame;
+pub mod function;
+pub mod frame;
 pub mod vm;
 pub mod native_functions;
-mod class;
-mod instance;
+pub mod class;
+pub mod instance;
 
 #[cfg(test)]
 mod tests {
