@@ -10,8 +10,6 @@ pub struct Class {
     pub methods: HashMap<String, Value>,
 }
 
-pub type ClassRef = GcRef<Class>;
-
 impl Class {
     pub fn new(name: String) -> Class {
         Class {

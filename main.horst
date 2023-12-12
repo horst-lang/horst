@@ -1,41 +1,39 @@
-class Array {
-    init(length) {
-        this.length = length;
-        this.first = nil;
-        this.second = nil;
-        this.third = nil;
+class Tree {
+    init() {
+        this.root = nil;
     }
 
-    get(index) {
-        if (index == 0) {
-            return this.first;
-        } else if (index == 1) {
-            return this.second;
-        } else if (index == 2) {
-            return this.third;
+    insert(data) {
+        this.root = this.insertHelper(this.root, data);
+    }
+
+    insertHelper(node, data) {
+        if (node == nil) {
+            node = Node(data);
         } else {
-            return nil;
+            if (data < node.data) {
+                node.left = this.insertHelper(node.left, data);
+            } else {
+                node.right = this.insertHelper(node.right, data);
+            }
         }
-    }
-
-    set(index, value) {
-        if (index == 0) {
-            this.first = value;
-        } else if (index == 1) {
-            this.second = value;
-        } else if (index == 2) {
-            this.third = value;
-        }
-    }
-
-    toString() {
-        print(this.first);
+        return node;
     }
 }
 
-let array = [1, 2];
-// let array = Array(2)
-// array.set(0, 1)
-// array.set(1, 2)
-array[0] = 100;
-print array[0];
+class Node {
+    init(data) {
+        this.data = data;
+        this.left = nil;
+        this.right = nil;
+    }
+}
+
+let t = Tree();
+
+t.insert(1);
+t.insert(2);
+
+print t.root.data; // 1
+// We expect the 2 to be in the right node of the root
+print t.root.right.data; // 2

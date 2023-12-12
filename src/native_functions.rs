@@ -8,20 +8,10 @@ use crate::function::{Function, NativeFunction};
 use crate::instance::Instance;
 use crate::value::Value;
 use crate::vm::{VM};
-lazy_static!(
-    pub static ref NATIVE_FUNCTIONS: HashMap<String, NativeFunction> = {
-        let mut map = HashMap::new();
-        map.insert("readln".to_string(), NativeFunction { function: readln });
-        map.insert("fetch".to_string(), NativeFunction { function: fetch });
-        map
-    };
 
-    pub static ref NATIVE_CLASSES: HashMap<String, Class> = {
-        let mut map = HashMap::new();
-        map.insert("Map".to_string(), make_map());
-        map
-    };
-);
+pub fn make_readln() -> NativeFunction {
+    return NativeFunction { function: readln };
+}
 
 fn readln(_: Vec<Value>, vm: &mut VM) -> Value {
     let mut s = String::new();

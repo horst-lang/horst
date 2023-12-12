@@ -3,12 +3,13 @@ use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
 use std::os::unix::process::parent_id;
-use crate::class::{Class, ClassRef};
+use crate::class::{Class};
 use crate::frame::CallFrame;
 use crate::function::Function;
 use crate::gc::{Gc, GcRef, GcTrace};
 use crate::instance::Instance;
 use crate::instruction::Instruction;
+use crate::native_functions::{make_readln};
 use crate::value::{InstanceRef, UpvalueRegistryRef, Value};
 
 pub struct VM {
@@ -32,9 +33,14 @@ impl VM {
 
     pub fn interpret(&mut self, function: Function) {
         let closure = Value::Closure(function, Vec::new());
+        self.init_globals();
         self.push(closure.clone());
         self.call_value(closure, 0);
         self.run();
+    }
+
+    fn init_globals(&mut self) {
+        self.globals.insert("readln".to_string(), Value::NativeFunction(make_readln()));
     }
 
     fn run(&mut self) {
@@ -342,7 +348,7 @@ impl VM {
         }
     }
 
-    fn bind_method(&mut self, class: ClassRef, instance: InstanceRef, name: String) {
+    fn bind_method(&mut self, class: GcRef<Class>, instance: InstanceRef, name: String) {
         let class = self.gc.deref(class).clone();
         if let Some(method) = class.methods.get(&name) {
             let (function, upvalues) = match method {
@@ -416,7 +422,7 @@ impl VM {
         }
     }
 
-    fn invoke_from_class(&mut self, class: ClassRef, method: String, arg_count: usize) {
+    fn invoke_from_class(&mut self, class: GcRef<Class>, method: String, arg_count: usize) {
         let class = self.gc.deref(class).clone();
         if let Some(method) = class.methods.get(&method) {
             self.call_value(method.clone(), arg_count);

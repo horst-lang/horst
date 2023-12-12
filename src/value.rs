@@ -1,7 +1,7 @@
 use std::fmt;
-use crate::class::{Class, ClassRef};
+use crate::class::{Class};
 use crate::function::{Function, NativeFunction};
-use crate::gc::{GcRef, GcTrace};
+use crate::gc::{GcRef, GcRefRaw, GcTrace};
 use crate::instance::Instance;
 use crate::vm::UpvalueRegistry;
 
@@ -21,6 +21,7 @@ pub enum Value {
         function: Function,
         upvalues: Vec<GcRef<UpvalueRegistry>>,
     },
+    Foreign(GcRefRaw)
 }
 
 pub type InstanceRef = GcRef<Instance>;
@@ -51,6 +52,7 @@ impl fmt::Display for Value {
             Value::BoundMethod { receiver, function, .. } => {
                 write!(f, "<bound method {}>", function.name)
             }
+            Value::Foreign(_) => write!(f, "<foreign>")
         }
     }
 }

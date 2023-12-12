@@ -1,17 +1,17 @@
 use std::any::Any;
 use std::collections::HashMap;
-use crate::class::{Class, ClassRef};
-use crate::gc::GcTrace;
+use crate::class::{Class};
+use crate::gc::{GcRef, GcTrace};
 use crate::value::Value;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Instance {
-    pub class: ClassRef,
+    pub class: GcRef<Class>,
     pub fields: HashMap<String, Value>,
 }
 
 impl Instance {
-    pub fn new(class: ClassRef) -> Instance {
+    pub fn new(class: GcRef<Class>) -> Instance {
         Instance {
             class,
             fields: HashMap::new()

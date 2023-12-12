@@ -15,6 +15,20 @@ pub struct GcRef<T: GcTrace> {
     _marker: std::marker::PhantomData<T>,
 }
 
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct GcRefRaw {
+    index: usize,
+}
+
+impl GcRefRaw {
+    fn to_gc_ref<T: GcTrace>(&self) -> GcRef<T> {
+        return GcRef {
+            index: self.index,
+            _marker: PhantomData
+        }
+    }
+}
+
 impl<T: GcTrace> Copy for GcRef<T> {}
 impl<T: GcTrace> Eq for GcRef<T> {}
 
