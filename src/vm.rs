@@ -1,8 +1,6 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
-use std::marker::PhantomData;
-use std::os::unix::process::parent_id;
 use crate::class::{Class};
 use crate::frame::CallFrame;
 use crate::function::Function;
@@ -52,6 +50,14 @@ impl VM {
                 if let (Value::Number(a), Value::Number(b)) = (a.clone(), b.clone()) {
                     self.push(Value::$type(a $op b ));
                 } else {
+                    println!("{} {}", a, b);
+                    // Print stack trace
+                    for frame in self.frames.iter().rev() {
+                        let function = frame.function.clone();
+                        let chunk = function.chunk.clone();
+                        let line = chunk.find_line(frame.ip).0;
+                        println!("[line {}] in {}()", line, function.name);
+                    }
                     panic!("Invalid operands for binary operation.");
                 }
             };
@@ -98,6 +104,7 @@ impl VM {
                     match (a, b) {
                         (Value::Number(a), Value::Number(b)) => self.stack.push(Value::Number(a + b)),
                         (Value::String(a), Value::String(b)) => self.stack.push(Value::String(a + &b)),
+                        (Value::String(a), b) => self.stack.push(Value::String(a + &b.to_string())),
                         _ => panic!("Operands must be two numbers or two strings."),
                     }
                 }
@@ -344,7 +351,16 @@ impl VM {
                     self.bind_method(instance.class, instance_ref, name);
                 }
             }
-            _ => panic!("Only instances have properties."),
+            _ => {
+                // Print stack trace
+                for frame in self.frames.iter().rev() {
+                    let function = frame.function.clone();
+                    let chunk = function.chunk.clone();
+                    let line = chunk.find_line(frame.ip).0;
+                    println!("[line {}] in {}()", line, function.name);
+                }
+                panic!("Only instances have properties. { }", instance)
+            }
         }
     }
 

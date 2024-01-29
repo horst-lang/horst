@@ -67,7 +67,6 @@ pub struct Gc {
 }
 
 impl Gc {
-    const HEAP_GROW_FACTOR: usize = 2;
     const INITIAL_HEAP_SIZE: usize = 1024 * 1024;
 
     pub(crate) fn new() -> Gc {

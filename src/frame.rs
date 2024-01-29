@@ -23,7 +23,7 @@ impl CallFrame {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct LineRecord {
+pub struct LineRecord {
     line: usize,
     count: usize,
 }
@@ -33,7 +33,7 @@ pub struct Chunk {
     name: String,
     pub constants: Vec<Value>,
     pub code: Vec<Instruction>,
-    lines: Vec<LineRecord>,
+    pub(crate) lines: Vec<LineRecord>,
 }
 
 impl Chunk {
