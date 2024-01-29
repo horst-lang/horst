@@ -7,7 +7,7 @@ use crate::function::Function;
 use crate::gc::{Gc, GcRef, GcTrace};
 use crate::instance::Instance;
 use crate::instruction::Instruction;
-use crate::native_functions::{make_readln};
+use crate::native_functions::{make_number, make_readln};
 use crate::value::{InstanceRef, UpvalueRegistryRef, Value};
 
 pub struct VM {
@@ -39,6 +39,7 @@ impl VM {
 
     fn init_globals(&mut self) {
         self.globals.insert("readln".to_string(), Value::NativeFunction(make_readln()));
+        self.globals.insert("number".to_string(), Value::NativeFunction(make_number()));
     }
 
     fn run(&mut self) {

@@ -13,11 +13,25 @@ pub fn make_readln() -> NativeFunction {
     return NativeFunction { function: readln };
 }
 
+pub fn make_number() -> NativeFunction {
+    return NativeFunction { function: number };
+}
+
 fn readln(_: Vec<Value>, vm: &mut VM) -> Value {
     let mut s = String::new();
     std::io::stdin().read_line(&mut s).unwrap();
     s.pop();
     Value::String(s)
+}
+
+fn number(args: Vec<Value>, vm: &mut VM) -> Value {
+    let mut args = args;
+    let s = if let Value::String(s) = args.pop().unwrap() {
+        s
+    } else {
+        panic!("First argument must be a string");
+    };
+    Value::Number(s.parse::<f64>().unwrap())
 }
 
 fn fetch(args: Vec<Value>, vm: &mut VM) -> Value {

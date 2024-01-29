@@ -7,6 +7,4 @@ fn main() {
     // dbg!(program.clone());
     let mut vm = VM::new();
     vm.interpret(program);
-
-
 }
