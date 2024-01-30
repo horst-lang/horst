@@ -14,4 +14,4 @@ Cargo.lock
 *.pdb
 
 # Test files
-main.horst
+*.horst
