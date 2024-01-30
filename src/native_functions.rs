@@ -8,6 +8,7 @@ use crate::function::{Function, NativeFunction};
 use crate::instance::Instance;
 use crate::value::Value;
 use crate::vm::{VM};
+use rand::Rng;
 
 pub fn make_readln() -> NativeFunction {
     return NativeFunction { function: readln };
@@ -17,11 +18,20 @@ pub fn make_number() -> NativeFunction {
     return NativeFunction { function: number };
 }
 
+pub fn make_random() -> NativeFunction {
+    return NativeFunction { function: random };
+}
+
 fn readln(_: Vec<Value>, vm: &mut VM) -> Value {
     let mut s = String::new();
     std::io::stdin().read_line(&mut s).unwrap();
     s.pop();
     Value::String(s)
+}
+
+fn random(_: Vec<Value>, vm: &mut VM) -> Value {
+    let mut rng = rand::thread_rng();
+    Value::Number(rng.gen_range(0.0..1.0))
 }
 
 fn number(args: Vec<Value>, vm: &mut VM) -> Value {
