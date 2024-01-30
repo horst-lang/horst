@@ -278,7 +278,9 @@ impl<'src> Parser<'src> {
     }
 
     fn expression_statement(&mut self) {
+        dbg!(self.current);
         self.expression();
+        dbg!(self.current);
         self.consume(TokenType::Semicolon, "Expect ';' after expression.");
         self.emit(Instruction::Pop);
     }
@@ -437,6 +439,8 @@ impl<'src> Parser<'src> {
             self.if_statement();
         } else if self.matches(TokenType::Return) {
             self.return_statement();
+        } else if self.matches(TokenType::Do) {
+            self.do_while_statement();
         } else if self.matches(TokenType::While) {
             self.while_statement();
         } else if self.matches(TokenType::For) {
@@ -491,12 +495,30 @@ impl<'src> Parser<'src> {
         self.expression();
         self.consume(TokenType::RightParen, "Expect ')' after condition.");
 
+        // Condition over
+
         let exit_jump = self.emit(Instruction::JumpIfFalse(0));
         self.emit(Instruction::Pop);
         self.statement();
         self.emit_loop(loop_start);
 
         self.patch_jump(exit_jump);
+        self.emit(Instruction::Pop);
+    }
+
+    fn do_while_statement(&mut self) {
+        let loop_start = self.start_loop();
+
+        self.statement();
+
+        self.consume(TokenType::While, "Expect 'while' in 'do while'");
+        self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
+        self.expression();
+        self.consume(TokenType::RightParen, "Expect ')' after condition.");
+
+        let exit_jump = self.emit(Instruction::JumpIfFalse(2));
+        self.emit(Instruction::Pop);
+        self.emit_loop(loop_start);
         self.emit(Instruction::Pop);
     }
 

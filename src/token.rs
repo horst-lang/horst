@@ -44,6 +44,7 @@ pub enum Token {
     This,                   // "this"
     True,                   // "true"
     While,                  // "while"
+    Do,                     // "do"
 
     // End of file
     Eof,

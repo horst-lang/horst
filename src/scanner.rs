@@ -18,7 +18,7 @@ pub enum TokenType {
     // Keywords.
     And, Class, Else, False,
     Fn, For, If, In, Let, Nil, Or,
-    Print, Return, Super, This, True, While,
+    Print, Return, Super, This, True, While, Do,
 
     Eof, Error
 }
@@ -252,6 +252,7 @@ impl<'src> Scanner<'src> {
             "this" => TokenType::This,
             "true" => TokenType::True,
             "while" => TokenType::While,
+            "do" => TokenType::Do,
             _ => TokenType::Identifier,
         }
     }
