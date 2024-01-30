@@ -172,6 +172,23 @@ impl<'src> Scanner<'src> {
                         self.advance();
                     }
                 },
+                b'/' if self.peek_next() == b'*' => {
+                    // Also supports nested comments
+                    let mut depth = 1;
+                    while depth > 0 && !self.is_at_end() {
+                        if self.peek() == b'/' && self.peek_next() == b'*' {
+                            depth += 1;
+                            self.advance();
+                        } else if self.peek() == b'*' && self.peek_next() == b'/' {
+                            depth -= 1;
+                            self.advance();
+                        } else if self.peek() == b'\n' {
+                            self.line += 1;
+                            self.column = 0;
+                        }
+                        self.advance();
+                    }
+                },
                 _ => return,
             }
         }

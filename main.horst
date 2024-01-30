@@ -5,7 +5,8 @@ fn f(x) {
         return x*x*x;
     }
 }
-
+/* Hallo
 print f(4);
-
+/* Hallo */
 print random();
+*/
