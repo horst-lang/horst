@@ -44,7 +44,7 @@ fn number(args: Vec<Value>, vm: &mut VM) -> Value {
         panic!("First argument must be a string");
     };
     if let Ok(number) = s.parse::<f64>() {
-        Value::Number(number);
+        return Value::Number(number);
     }
     Value::Nil
 }
@@ -57,7 +57,7 @@ fn int(args: Vec<Value>, vm: &mut VM) -> Value {
         panic!("First argument must be a string");
     };
     if let Ok(number) = s.parse::<i32>() {
-        Value::Number(number as f64);
+        return Value::Number(number as f64);
     }
     Value::Nil
 }
