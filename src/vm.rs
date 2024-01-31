@@ -130,11 +130,13 @@ impl VM {
                         let methods = &self.gc.deref(self.gc.deref(i).class).methods;
                         if methods.contains_key( "toString") {
                             let frames = self.frames.clone();
+                            let l = self.stack.len();
                             self.frames = vec![];
                             self.stack.push(value);
                             self.invoke("toString".to_string(), 0);
                             let result = self.run();
                             self.frames = frames;
+                            self.stack.truncate(l);
                             println!("{}", result);
                         }
                     } else {
