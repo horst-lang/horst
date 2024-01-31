@@ -101,7 +101,6 @@ impl<'src> Compiler<'src> {
             locals: Vec::new(),
             scope_depth: 0,
         };
-        println!("Compiler::new: function_type={:?}", function_type);
         let token = match function_type {
             FunctionType::Method | FunctionType::Initializer => Token::synthetic("this"),
             _ => Token::synthetic(""),
@@ -278,9 +277,7 @@ impl<'src> Parser<'src> {
     }
 
     fn expression_statement(&mut self) {
-        dbg!(self.current);
         self.expression();
-        dbg!(self.current);
         self.consume(TokenType::Semicolon, "Expect ';' after expression.");
         self.emit(Instruction::Pop);
     }

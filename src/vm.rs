@@ -124,6 +124,7 @@ impl VM {
                 }
                 Instruction::Print => {
                     println!("{}", self.stack.pop().unwrap());
+                    //println!("{}", self.stack.pop().unwrap());
                 }
                 Instruction::Jump(offset) => {
                     self.frame_mut().ip += offset;
