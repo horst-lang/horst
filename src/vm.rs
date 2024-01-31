@@ -43,7 +43,7 @@ impl VM {
         self.globals.insert("random".to_string(), Value::NativeFunction(make_random()));
     }
 
-    fn run(&mut self) {
+    fn run(&mut self) -> Value {
         macro_rules! binary_op {
             ($op:tt, $type:tt) => {
                 let b = self.pop();
@@ -123,8 +123,21 @@ impl VM {
                     }
                 }
                 Instruction::Print => {
-                    println!("{}", self.stack.pop().unwrap());
-                    //println!("{}", self.stack.pop().unwrap());
+                    let value = self.stack.pop().unwrap();
+                    if let Value::Instance(i) = value {
+                        let methods = &self.gc.deref(self.gc.deref(i).class).methods;
+                        if methods.contains_key( "toString") {
+                            let frames = self.frames.clone();
+                            self.frames = vec![];
+                            self.stack.push(value);
+                            self.invoke("toString".to_string(), 0);
+                            let result = self.run();
+                            self.frames = frames;
+                            println!("{}", result);
+                        }
+                    } else {
+                        println!("{}", value);
+                    }
                 }
                 Instruction::Jump(offset) => {
                     self.frame_mut().ip += offset;
@@ -168,7 +181,7 @@ impl VM {
                     self.frames.pop();
                     if self.frames.is_empty() {
                         self.stack.pop();
-                        return;
+                        return result;
                     }
                     self.stack.truncate(base);
                     self.stack.push(result);
