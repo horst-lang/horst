@@ -100,6 +100,7 @@ impl VM {
                 Instruction::Subtract => { binary_op!(-, Number); },
                 Instruction::Multiply => { binary_op!(*, Number); },
                 Instruction::Divide => { binary_op!(/, Number); },
+                Instruction::Modulo => { binary_op!(%, Number); },
                 Instruction::Add => {
                     let b = self.stack.pop().unwrap();
                     let a = self.stack.pop().unwrap();

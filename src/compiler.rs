@@ -223,6 +223,7 @@ impl<'src> Parser<'src> {
         rule(Semicolon, None, None, P::None);
         rule(Slash, None, Some(Parser::binary), P::Factor);
         rule(Star, None, Some(Parser::binary), P::Factor);
+        rule(Percent, None, Some(Parser::binary), P::Factor);
         rule(Bang, Some(Parser::unary), None, P::None);
         rule(BangEqual, None, Some(Parser::binary), P::Equality);
         rule(Equal, None, None, P::None);
@@ -851,6 +852,7 @@ impl<'src> Parser<'src> {
             TokenType::Minus => self.emit(Instruction::Subtract),
             TokenType::Star => self.emit(Instruction::Multiply),
             TokenType::Slash => self.emit(Instruction::Divide),
+            TokenType::Percent => self.emit(Instruction::Modulo),
             TokenType::BangEqual => self.emit_two(Instruction::Equal, Instruction::Not),
             TokenType::EqualEqual => self.emit(Instruction::Equal),
             TokenType::Greater => self.emit(Instruction::Greater),

@@ -4,7 +4,7 @@ use std::path::Path;
 pub enum TokenType {
     // Single-character tokens.
     LeftParen, RightParen, LeftBrace, RightBrace, LeftBracket, RightBracket,
-    Comma, Dot, Minus, Plus, Semicolon, Slash, Star,
+    Comma, Dot, Minus, Plus, Semicolon, Slash, Star, Percent,
 
     // One or two character tokens.
     Bang, BangEqual,
@@ -82,6 +82,7 @@ impl<'src> Scanner<'src> {
             b'+' => self.make_token(TokenType::Plus),
             b'/' => self.make_token(TokenType::Slash),
             b'*' => self.make_token(TokenType::Star),
+            b'%' => self.make_token(TokenType::Percent),
             b'!' if self.matches(b'=') => self.make_token(TokenType::BangEqual),
             b'!' => self.make_token(TokenType::Bang),
             b'=' if self.matches(b'=') => self.make_token(TokenType::EqualEqual),
