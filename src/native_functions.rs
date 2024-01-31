@@ -18,6 +18,8 @@ pub fn make_number() -> NativeFunction {
     return NativeFunction { function: number };
 }
 
+pub fn make_int() -> NativeFunction { return NativeFunction { function: int }; }
+
 pub fn make_random() -> NativeFunction {
     return NativeFunction { function: random };
 }
@@ -42,6 +44,16 @@ fn number(args: Vec<Value>, vm: &mut VM) -> Value {
         panic!("First argument must be a string");
     };
     Value::Number(s.parse::<f64>().unwrap())
+}
+
+fn int(args: Vec<Value>, vm: &mut VM) -> Value {
+    let mut args = args;
+    let s = if let Value::String(s) = args.pop().unwrap() {
+        s
+    } else {
+        panic!("First argument must be a string");
+    };
+    Value::Number(s.parse::<i32>().unwrap() as f64)
 }
 
 fn fetch(args: Vec<Value>, vm: &mut VM) -> Value {
