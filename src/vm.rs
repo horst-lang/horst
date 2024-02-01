@@ -7,7 +7,7 @@ use crate::function::Function;
 use crate::gc::{Gc, GcRef, GcTrace};
 use crate::instance::Instance;
 use crate::instruction::Instruction;
-use crate::native_functions::{make_int, make_number, make_random, make_readln};
+use crate::native_functions::{make_floor, make_int, make_number, make_random, make_readln};
 use crate::value::{InstanceRef, UpvalueRegistryRef, Value};
 
 pub struct VM {
@@ -42,6 +42,7 @@ impl VM {
         self.globals.insert("number".to_string(), Value::NativeFunction(make_number()));
         self.globals.insert("int".to_string(), Value::NativeFunction(make_int()));
         self.globals.insert("random".to_string(), Value::NativeFunction(make_random()));
+        self.globals.insert("floor".to_string(), Value::NativeFunction(make_floor()));
     }
 
     fn run(&mut self) -> Value {

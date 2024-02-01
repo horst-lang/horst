@@ -24,6 +24,8 @@ pub fn make_random() -> NativeFunction {
     return NativeFunction { function: random };
 }
 
+pub fn make_floor() -> NativeFunction { return NativeFunction { function: floor }; }
+
 fn readln(_: Vec<Value>, vm: &mut VM) -> Value {
     let mut s = String::new();
     std::io::stdin().read_line(&mut s).unwrap();
@@ -60,6 +62,16 @@ fn int(args: Vec<Value>, vm: &mut VM) -> Value {
         return Value::Number(number as f64);
     }
     Value::Nil
+}
+
+fn floor(args: Vec<Value>, vm: &mut VM) -> Value {
+    let mut args = args;
+    let number = if let Value::Number(number) = args.pop().unwrap() {
+        number
+    } else {
+        panic!("First argument must be a number");
+    };
+    Value::Number(number.floor())
 }
 
 fn fetch(args: Vec<Value>, vm: &mut VM) -> Value {
