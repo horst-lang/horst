@@ -495,7 +495,6 @@ impl<'src> Parser<'src> {
         let module_name = self.previous;
         let module_constant = self.make_constant(Value::String(module_name.lexeme[1..module_name.lexeme.len() - 1].to_string()));
         self.emit(Instruction::ImportModule(module_constant));
-        self.emit(Instruction::Pop);
 
         if !self.matches(TokenType::For) {
             self.consume(TokenType::Semicolon, "Expect ';' after module name.");
