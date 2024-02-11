@@ -1,11 +1,7 @@
 use std::collections::HashMap;
-use std::io::Read;
 use std::ops::{Add, Deref};
-use lazy_static::lazy_static;
 use crate::class::Class;
-use crate::frame::CallFrame;
 use crate::function::{Function, NativeFunction};
-use crate::instance::Instance;
 use crate::value::Value;
 use crate::vm::{VM};
 use rand::Rng;
@@ -26,6 +22,8 @@ pub fn make_random() -> NativeFunction {
 
 pub fn make_floor() -> NativeFunction { return NativeFunction { function: floor }; }
 
+pub fn make_panic() -> NativeFunction { return NativeFunction { function: panic }; }
+
 fn readln(_: Vec<Value>, vm: &mut VM) -> Value {
     let mut s = String::new();
     std::io::stdin().read_line(&mut s).unwrap();
@@ -43,7 +41,7 @@ fn number(args: Vec<Value>, vm: &mut VM) -> Value {
     let s = if let Value::String(s) = args.pop().unwrap() {
         s
     } else {
-        panic!("First argument must be a string");
+        vm.error("First argument must be a string");
     };
     if let Ok(number) = s.parse::<f64>() {
         return Value::Number(number);
@@ -56,7 +54,7 @@ fn int(args: Vec<Value>, vm: &mut VM) -> Value {
     let s = if let Value::String(s) = args.pop().unwrap() {
         s
     } else {
-        panic!("First argument must be a string");
+        vm.error("First argument must be a string");
     };
     if let Ok(number) = s.parse::<i32>() {
         return Value::Number(number as f64);
@@ -69,22 +67,19 @@ fn floor(args: Vec<Value>, vm: &mut VM) -> Value {
     let number = if let Value::Number(number) = args.pop().unwrap() {
         number
     } else {
-        panic!("First argument must be a number");
+        vm.error("First argument must be a number");
     };
     Value::Number(number.floor())
 }
 
-fn fetch(args: Vec<Value>, vm: &mut VM) -> Value {
+fn panic(args: Vec<Value>, vm: &mut VM) -> Value {
     let mut args = args;
-    let url = if let Value::String(url) = args.pop().unwrap() {
-        url
+    let message = if let Value::String(message) = args.pop().unwrap() {
+        message
     } else {
-        panic!("First argument must be a string");
+        vm.error("First argument must be a string");
     };
-    let mut res = reqwest::blocking::get(&url).unwrap();
-    let mut body = String::new();
-    res.read_to_string(&mut body).unwrap();
-    Value::String(body)
+    vm.error(message);
 }
 
 fn make_map() -> Class {

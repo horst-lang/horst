@@ -1,13 +1,14 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
+use std::fmt::format;
 use crate::class::{Class};
 use crate::frame::CallFrame;
 use crate::function::Function;
 use crate::gc::{Gc, GcRef, GcTrace};
 use crate::instance::Instance;
 use crate::instruction::Instruction;
-use crate::native_functions::{make_floor, make_int, make_number, make_random, make_readln};
+use crate::native_functions::{make_floor, make_int, make_number, make_panic, make_random, make_readln};
 use crate::value::{InstanceRef, UpvalueRegistryRef, Value};
 
 pub struct VM {
@@ -43,6 +44,7 @@ impl VM {
         self.globals.insert("int".to_string(), Value::NativeFunction(make_int()));
         self.globals.insert("random".to_string(), Value::NativeFunction(make_random()));
         self.globals.insert("floor".to_string(), Value::NativeFunction(make_floor()));
+        self.globals.insert("panic".to_string(), Value::NativeFunction(make_panic()));
     }
 
     fn run(&mut self) -> Value {
@@ -54,15 +56,7 @@ impl VM {
                 if let (Value::Number(a), Value::Number(b)) = (a.clone(), b.clone()) {
                     self.push(Value::$type(a $op b ));
                 } else {
-                    println!("{} {}", a, b);
-                    // Print stack trace
-                    for frame in self.frames.iter().rev() {
-                        let function = frame.function.clone();
-                        let chunk = function.chunk.clone();
-                        let line = chunk.find_line(frame.ip).0;
-                        println!("[line {}] in {}()", line, function.name);
-                    }
-                    panic!("Invalid operands for binary operation.");
+                    self.error("Invalid operands for binary operation.");
                 }
             };
         }
@@ -110,7 +104,7 @@ impl VM {
                         (Value::Number(a), Value::Number(b)) => self.stack.push(Value::Number(a + b)),
                         (Value::String(a), Value::String(b)) => self.stack.push(Value::String(a + &b)),
                         (Value::String(a), b) => self.stack.push(Value::String(a + &b.to_string())),
-                        _ => panic!("Operands must be two numbers or two strings."),
+                        _ => self.error("Operands must be two numbers or two strings."),
                     }
                 }
                 Instruction::Not => {
@@ -122,7 +116,7 @@ impl VM {
                     if let Value::Number(value) = value {
                         self.stack.push(Value::Number(-value));
                     } else {
-                        panic!("Operand must be a number.");
+                        self.error("Operand must be a number.");
                     }
                 }
                 Instruction::Print => {
@@ -170,7 +164,7 @@ impl VM {
                         Value::Class(class) => {
                             self.invoke_from_class(class, name, arg_count);
                         }
-                        _ => panic!("Only classes have superclass."),
+                        _ => self.error("Only classes have superclass."),
                     }
                 }
                 Instruction::Closure(index) => self.make_closure(index),
@@ -206,7 +200,7 @@ impl VM {
                             subclass.methods.insert(name.clone(), method.clone());
                         }
                     } else {
-                        panic!("Superclass must be a class.");
+                        self.error("Superclass must be a class.");
                     }
                 }
                 Instruction::Method(index) => self.define_method(index),
@@ -250,7 +244,7 @@ impl VM {
         if let Some(value) = self.globals.get(&name) {
             self.stack.push(value.clone());
         } else {
-            panic!("Undefined variable '{}'.", name);
+            self.error(format!("Undefined variable '{}'.", name));
         }
     }
 
@@ -266,7 +260,7 @@ impl VM {
             let value = self.peek(0).unwrap().clone();
             self.globals.insert(name, value);
         } else {
-            panic!("Undefined variable '{}'.", name);
+            self.error(format!("Undefined variable '{}'.", name));
         }
     }
 
@@ -380,7 +374,7 @@ impl VM {
                     let line = chunk.find_line(frame.ip).0;
                     println!("[line {}] in {}()", line, function.name);
                 }
-                panic!("Only instances have properties. { }", instance)
+                self.error(format!("Only instances have properties. {}", instance))
             }
         }
     }
@@ -400,7 +394,7 @@ impl VM {
                 upvalues,
             });
         } else {
-            panic!("Undefined property '{}'.", name);
+            self.error(format!("Undefined property '{}'.", name));
         }
     }
 
@@ -414,7 +408,7 @@ impl VM {
                 let mut instance = self.gc.deref_mut(instance_ref);
                 instance.fields.insert(name, value.clone());
             }
-            _ => panic!("Only instances have fields."),
+            _ => self.error("Only instances have fields."),
         }
         self.push(value);
     }
@@ -425,7 +419,7 @@ impl VM {
             let name = self.read_string(index);
             self.bind_method(super_class, this, name);
         } else {
-            panic!("Superclass must be a class.")
+            self.error("Superclass must be a class.")
         }
     }
 
@@ -455,7 +449,7 @@ impl VM {
                     self.invoke_from_class(class, method, arg_count);
                 }
             }
-            _ => panic!("Only instances have methods."),
+            _ => self.error("Only instances have methods."),
         }
     }
 
@@ -464,7 +458,7 @@ impl VM {
         if let Some(method) = class.methods.get(&method) {
             self.call_value(method.clone(), arg_count);
         } else {
-            panic!("Undefined property '{}'.", method);
+            self.error(format!("Undefined property '{}'.", method));
         }
     }
 
@@ -514,7 +508,7 @@ impl VM {
                 self.pop_many(arg_count + 1);
                 self.stack.push(result);
             }
-            _ => panic!("Can only call functions and classes."),
+            _ => self.error("Can only call functions and classes."),
         }
     }
 
@@ -525,10 +519,10 @@ impl VM {
 
     fn call(&mut self, function: Function, upvalues: Vec<UpvalueRegistryRef>, arg_count: usize) {
         if arg_count != function.arity {
-            panic!(
+            self.error(format!(
                 "Expected {} arguments but got {}.",
                 function.arity, arg_count
-            );
+            ));
         }
         self.frames.push(CallFrame {
             function,
@@ -546,6 +540,17 @@ impl VM {
 
     fn pop(&mut self) -> Value {
         self.stack.pop().unwrap()
+    }
+
+    pub(crate) fn error<T: fmt::Display>(&self, message: T) -> ! {
+        for frame in self.frames.iter().rev() {
+            let function = frame.function.clone();
+            let chunk = function.chunk.clone();
+            let line = chunk.find_line(frame.ip).0;
+            eprintln!("[line {}] in {}()", line, function.name);
+        }
+        eprintln!("Error: {}", message);
+        std::process::exit(1);
     }
 
     fn push(&mut self, value: Value) {

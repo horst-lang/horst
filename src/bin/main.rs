@@ -8,7 +8,11 @@ fn main() {
     let file = &args[1];
 
     let source = std::fs::read_to_string(file).unwrap();
-    let program = compile(&source).unwrap();
+    let program = if let Ok(program) = compile(&source) {
+        program
+    } else {
+        std::process::exit(65);
+    };
     // dbg!(program.clone());
     let mut vm = VM::new();
     vm.interpret(program);
