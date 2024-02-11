@@ -49,4 +49,6 @@ pub enum Instruction {
     Class(usize),
     Inherit,
     Method(usize),
+    ImportModule(usize),
+    ImportVariable(usize),
 }

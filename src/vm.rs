@@ -1,8 +1,10 @@
 use std::any::Any;
 use std::collections::HashMap;
-use std::fmt;
+use std::{fmt, mem};
 use std::fmt::format;
+use std::path::Path;
 use crate::class::{Class};
+use crate::compiler::compile;
 use crate::frame::CallFrame;
 use crate::function::Function;
 use crate::gc::{Gc, GcRef, GcTrace};
@@ -17,16 +19,25 @@ pub struct VM {
     globals: HashMap<String, Value>,
     open_upvalues: Vec<UpvalueRegistryRef>,
     pub(crate) gc: Gc,
+    last_module: Option<Module>,
+    path: String,
+}
+
+struct Module {
+    name: String,
+    variables: HashMap<String, Value>,
 }
 
 impl VM {
-    pub fn new() -> VM {
+    pub fn new(path: String) -> VM {
         VM {
             stack: Vec::new(),
             frames: Vec::new(),
             globals: HashMap::new(),
             open_upvalues: Vec::new(),
             gc: Gc::new(),
+            last_module: None,
+            path,
         }
     }
 
@@ -203,9 +214,56 @@ impl VM {
                         self.error("Superclass must be a class.");
                     }
                 }
+                Instruction::ImportModule(index) => {
+                    let name = self.read_string(index);
+                    let module = self.import_module(name);
+                    self.last_module = Some(module);
+                }
+                Instruction::ImportVariable(index) => {
+                    let name = self.read_string(index);
+                    let module = self.last_module.as_ref().unwrap();
+                    if let Some(value) = module.variables.get(&name) {
+                        self.stack.push(value.clone());
+                    } else {
+                        self.error(format!("Could not find a variable named '{}' in module '{}'.", name, module.name));
+                    }
+                }
                 Instruction::Method(index) => self.define_method(index),
             }
         }
+    }
+
+    fn import_module(&mut self, name: String) -> Module {
+        // FIXME: Fix circular imports (For example using a module map)
+        let file = Path::new(&self.path).with_file_name(&name);
+        let source = if let Ok(source) = std::fs::read_to_string(&file) {
+            source
+        } else {
+            eprintln!("Could not read module file");
+            std::process::exit(66);
+        };
+
+        let program = if let Ok(program) = compile(&source) {
+            program
+        } else {
+            eprintln!("Could not compile module");
+            std::process::exit(65);
+        };
+
+        let frames = mem::replace(&mut self.frames, vec![]);
+        let stack = mem::replace(&mut self.stack, vec![]);
+        let globals = mem::replace(&mut self.globals, HashMap::new());
+        let path = mem::replace(&mut self.path, file.to_string_lossy().to_string());
+        self.interpret(program);
+        let module = Module {
+            name,
+            variables: self.globals.clone(),
+        };
+        self.frames = frames;
+        self.stack = stack;
+        self.globals = globals;
+        self.path = path;
+        module
     }
 
     fn get_current_instruction(&self) -> Instruction {
@@ -549,8 +607,16 @@ impl VM {
             let line = chunk.find_line(frame.ip).0;
             eprintln!("[line {}] in {}()", line, function.name);
         }
+        eprintln!("in {}", self.path);
         eprintln!("Error: {}", message);
         std::process::exit(1);
+    }
+
+    fn to_module(self, name: String) -> Module {
+        Module {
+            name,
+            variables: self.globals,
+        }
     }
 
     fn push(&mut self, value: Value) {

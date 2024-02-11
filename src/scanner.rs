@@ -16,8 +16,8 @@ pub enum TokenType {
     Identifier, String, Number,
 
     // Keywords.
-    And, Class, Else, False,
-    Fn, For, If, In, Let, Nil, Or,
+    And, As, Class, Else, False,
+    Fn, For, If, Import, In, Let, Nil, Or,
     Print, Return, Super, This, True, While, Do,
 
     Eof, Error
@@ -237,12 +237,14 @@ impl<'src> Scanner<'src> {
     fn identifier_type(&self) -> TokenType {
         match self.lexeme() {
             "and" => TokenType::And,
+            "as" => TokenType::As,
             "class" => TokenType::Class,
             "else" => TokenType::Else,
             "false" => TokenType::False,
             "for" => TokenType::For,
             "fn" => TokenType::Fn,
             "if" => TokenType::If,
+            "import" => TokenType::Import,
             "in" => TokenType::In,
             "let" => TokenType::Let,
             "nil" => TokenType::Nil,

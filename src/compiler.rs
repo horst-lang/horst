@@ -242,6 +242,7 @@ impl<'src> Parser<'src> {
         rule(For, None, None, P::None);
         rule(Fn, None, None, P::None);
         rule(If, None, None, P::None);
+        rule(Import, None, None, P::None);
         rule(Nil, Some(Parser::literal), None, P::None);
         rule(Or, None, Some(Parser::or_op), P::Or);
         rule(Print, None, None, P::None);
@@ -435,6 +436,8 @@ impl<'src> Parser<'src> {
             self.print_statement();
         } else if self.matches(TokenType::If) {
             self.if_statement();
+        } else if self.matches(TokenType::Import) {
+            self.import_statement();
         } else if self.matches(TokenType::Return) {
             self.return_statement();
         } else if self.matches(TokenType::Do) {
@@ -485,6 +488,42 @@ impl<'src> Parser<'src> {
             self.statement();
         }
         self.patch_jump(else_jump);
+    }
+
+    fn import_statement(&mut self) {
+        self.consume(TokenType::String, "Expect a string after 'import'.");
+        let module_name = self.previous;
+        let module_constant = self.make_constant(Value::String(module_name.lexeme[1..module_name.lexeme.len() - 1].to_string()));
+        self.emit(Instruction::ImportModule(module_constant));
+        self.emit(Instruction::Pop);
+
+        if !self.matches(TokenType::For) {
+            self.consume(TokenType::Semicolon, "Expect ';' after module name.");
+            return;
+        }
+
+        loop {
+            self.consume(TokenType::Identifier, "Expect variable name.");
+            let variable = self.previous;
+            let name_constant = self.identifier_constant(variable);
+            let slot;
+            if self.matches(TokenType::As) {
+                self.consume(TokenType::Identifier, "Expect variable name.");
+                let variable_name = self.previous;
+                slot = self.identifier_constant(variable_name);
+                self.declare_variable();
+            } else {
+                slot = name_constant;
+                self.declare_variable();
+            }
+            self.emit(Instruction::ImportVariable(name_constant));
+            self.define_variable(slot);
+
+            if !self.matches(TokenType::Comma) {
+                break;
+            }
+        }
+        self.consume(TokenType::Semicolon, "Expect ';' after import statement.");
     }
 
     fn while_statement(&mut self) {

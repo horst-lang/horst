@@ -26,7 +26,9 @@ pub fn make_panic() -> NativeFunction { return NativeFunction { function: panic 
 
 fn readln(_: Vec<Value>, vm: &mut VM) -> Value {
     let mut s = String::new();
-    std::io::stdin().read_line(&mut s).unwrap();
+    std::io::stdin().read_line(&mut s).unwrap_or_else(|_| {
+        vm.error("Could not read line");
+    });
     s.pop();
     Value::String(s)
 }
@@ -38,7 +40,7 @@ fn random(_: Vec<Value>, vm: &mut VM) -> Value {
 
 fn number(args: Vec<Value>, vm: &mut VM) -> Value {
     let mut args = args;
-    let s = if let Value::String(s) = args.pop().unwrap() {
+    let s = if let Some(Value::String(s)) = args.pop() {
         s
     } else {
         vm.error("First argument must be a string");
@@ -51,7 +53,7 @@ fn number(args: Vec<Value>, vm: &mut VM) -> Value {
 
 fn int(args: Vec<Value>, vm: &mut VM) -> Value {
     let mut args = args;
-    let s = if let Value::String(s) = args.pop().unwrap() {
+    let s = if let Some(Value::String(s)) = args.pop() {
         s
     } else {
         vm.error("First argument must be a string");
@@ -64,7 +66,7 @@ fn int(args: Vec<Value>, vm: &mut VM) -> Value {
 
 fn floor(args: Vec<Value>, vm: &mut VM) -> Value {
     let mut args = args;
-    let number = if let Value::Number(number) = args.pop().unwrap() {
+    let number = if let Some(Value::Number(number)) = args.pop() {
         number
     } else {
         vm.error("First argument must be a number");
@@ -74,7 +76,7 @@ fn floor(args: Vec<Value>, vm: &mut VM) -> Value {
 
 fn panic(args: Vec<Value>, vm: &mut VM) -> Value {
     let mut args = args;
-    let message = if let Value::String(message) = args.pop().unwrap() {
+    let message = if let Some(Value::String(message)) = args.pop() {
         message
     } else {
         vm.error("First argument must be a string");
