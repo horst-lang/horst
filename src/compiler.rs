@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::mem;
 use crate::frame::Chunk;
 use crate::function::Function;
+use crate::gc::GcRef;
 use crate::instruction::Instruction;
 use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::Value;
-use crate::vm::FunctionUpvalue;
+use crate::vm::{FunctionUpvalue, Module};
 
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
 enum Precedence {
@@ -93,10 +94,10 @@ struct Compiler<'src> {
 }
 
 impl<'src> Compiler<'src> {
-    fn new(function_name: &'src str, function_type: FunctionType) -> Box<Self> {
+    fn new(function_name: &'src str, function_type: FunctionType, module: GcRef<Module>) -> Box<Self> {
         let mut compiler = Compiler {
             enclosing: None,
-            function: Function::new(function_name, 0, Chunk::new("")),
+            function: Function::new(function_name, 0, Chunk::new(""), module),
             function_type,
             locals: Vec::new(),
             scope_depth: 0,
@@ -182,14 +183,15 @@ pub struct Parser<'src> {
     panic_mode: bool,
     resolver_errors: Vec<&'static str>,
     rules: HashMap<TokenType, ParseRule<'src>>,
+    pub module: GcRef<Module>,
 }
 
 impl<'src> Parser<'src> {
-    fn new(source: &'src str) -> Self {
+    fn new(source: &'src str, module: GcRef<Module>) -> Self {
         let rules = Parser::rules();
         Parser {
             scanner: Scanner::new(source),
-            compiler: Compiler::new("script", FunctionType::Script),
+            compiler: Compiler::new("script", FunctionType::Script, module),
             class_compiler: None,
             current: Token::synthetic(""),
             previous: Token::synthetic(""),
@@ -197,6 +199,7 @@ impl<'src> Parser<'src> {
             panic_mode: false,
             resolver_errors: Vec::new(),
             rules,
+            module
         }
     }
 
@@ -353,7 +356,7 @@ impl<'src> Parser<'src> {
 
     fn push_compiler(&mut self, kind: FunctionType) {
         let function_name = self.previous.lexeme;
-        let new_compiler = Compiler::new(function_name, kind);
+        let new_compiler = Compiler::new(function_name, kind, self.module);
         let old_compiler = mem::replace(&mut self.compiler, new_compiler);
         self.compiler.enclosing = Some(old_compiler);
     }
@@ -1103,7 +1106,7 @@ impl<'src> Parser<'src> {
 
 }
 
-pub fn compile(source: &str) -> Result<Function, ()> {
-    let parser = Parser::new(source);
+pub fn compile(source: &str, module: GcRef<Module>) -> Result<Function, ()> {
+    let parser = Parser::new(source, module);
     parser.compile()
 }

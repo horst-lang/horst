@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use crate::frame::Chunk;
+use crate::gc::GcRef;
 use crate::instruction::Instruction;
 use crate::value::Value;
-use crate::vm::{FunctionUpvalue, VM};
+use crate::vm::{FunctionUpvalue, Module, VM};
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Function {
@@ -12,6 +13,7 @@ pub struct Function {
     pub arity: usize,
     pub chunk: Chunk,
     pub upvalues: Vec<FunctionUpvalue>,
+    pub module: GcRef<Module>
 }
 
 
@@ -42,12 +44,13 @@ impl fmt::Debug for NativeFunction {
 
 
 impl Function {
-    pub fn new<S: Into<String>>(name: S, arity: usize, chunk: Chunk) -> Function {
+    pub fn new<S: Into<String>>(name: S, arity: usize, chunk: Chunk, module: GcRef<Module>) -> Function {
         Function {
             name: name.into(),
             arity,
             chunk,
             upvalues: Vec::new(),
+            module
         }
     }
 }

@@ -12,7 +12,7 @@ fn main() {
 
     let file = &args[1];
 
-    if file != "haupt.horst" {
+    if Path::new(file).file_name().unwrap() != "haupt.horst" {
         println!("Using file name 'haupt.horst' is recommended");
     }
 
@@ -23,12 +23,12 @@ fn main() {
         std::process::exit(66);
     };
 
-    let program = if let Ok(program) = compile(&source) {
+    let mut vm = VM::new(Path::new(file).canonicalize().unwrap().to_str().unwrap().to_string());
+    let program = if let Ok(program) = vm.compile(None, &source) {
         program
     } else {
         std::process::exit(65);
     };
 
-    let mut vm = VM::new(file.to_string());
     vm.interpret(program);
 }
