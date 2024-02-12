@@ -334,7 +334,7 @@ impl VM {
     fn import_module(&mut self, name: String) -> Module {
         // FIXME: Fix circular imports (For example using a module map)
         // Append the module name to the path
-        let file = Path::new(&self.module().name.clone().unwrap_or(self.base.clone())).with_file_name(name.clone());
+        let file = Path::new(&self.module().name.clone().unwrap_or(self.base.clone())).with_file_name(name.clone()).canonicalize().unwrap();
         let relative = path_relative_from(&file, Path::new(&self.base).parent().unwrap()).unwrap();
         let name = relative.to_str().unwrap().to_string();
         let source = if let Ok(source) = std::fs::read_to_string(&file) {
