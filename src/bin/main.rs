@@ -24,7 +24,7 @@ fn main() {
     };
 
     let mut vm = VM::new(Path::new(file).canonicalize().unwrap().to_str().unwrap().to_string());
-    let program = if let Ok(program) = vm.compile(None, &source) {
+    let program = if let Ok(program) = vm.compile(file.strip_suffix(".horst").unwrap().to_string(), &source) {
         program
     } else {
         std::process::exit(65);

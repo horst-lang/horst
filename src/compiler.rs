@@ -4,9 +4,10 @@ use crate::frame::Chunk;
 use crate::function::Function;
 use crate::gc::GcRef;
 use crate::instruction::Instruction;
+use crate::module::Module;
 use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::Value;
-use crate::vm::{FunctionUpvalue, Module};
+use crate::vm::{FunctionUpvalue};
 
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
 enum Precedence {

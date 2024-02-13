@@ -4,8 +4,9 @@ use std::fmt::Debug;
 use crate::frame::Chunk;
 use crate::gc::GcRef;
 use crate::instruction::Instruction;
+use crate::module::Module;
 use crate::value::Value;
-use crate::vm::{FunctionUpvalue, Module, VM};
+use crate::vm::{FunctionUpvalue, VM};
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Function {

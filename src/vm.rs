@@ -1,8 +1,6 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::{fmt, mem};
-use std::fmt::format;
-use std::path::{Path, PathBuf};
 use crate::class::{Class};
 use crate::compiler::compile;
 use crate::frame::CallFrame;
@@ -10,6 +8,7 @@ use crate::function::Function;
 use crate::gc::{Gc, GcRef, GcTrace};
 use crate::instance::Instance;
 use crate::instruction::Instruction;
+use crate::module::{Module, read_module, resolve_module};
 use crate::native_functions::{make_floor, make_int, make_number, make_panic, make_random, make_readln};
 use crate::value::{InstanceRef, UpvalueRegistryRef, Value};
 
@@ -20,82 +19,8 @@ pub struct VM {
     open_upvalues: Vec<UpvalueRegistryRef>,
     pub(crate) gc: Gc,
     last_module: Option<Module>,
-    modules: HashMap<Option<String>, GcRef<Module>>,
+    modules: HashMap<String, GcRef<Module>>,
     base: String
-}
-
-fn path_relative_from(path: &Path, base: &Path) -> Option<PathBuf> {
-    use std::path::Component;
-
-    if path.is_absolute() != base.is_absolute() {
-        if path.is_absolute() {
-            Some(PathBuf::from(path))
-        } else {
-            None
-        }
-    } else {
-        let mut ita = path.components();
-        let mut itb = base.components();
-        let mut comps: Vec<Component> = vec![];
-        loop {
-            match (ita.next(), itb.next()) {
-                (None, None) => break,
-                (Some(a), None) => {
-                    comps.push(a);
-                    comps.extend(ita.by_ref());
-                    break;
-                }
-                (None, _) => comps.push(Component::ParentDir),
-                (Some(a), Some(b)) if comps.is_empty() && a == b => (),
-                (Some(a), Some(b)) if b == Component::CurDir => comps.push(a),
-                (Some(_), Some(b)) if b == Component::ParentDir => return None,
-                (Some(a), Some(_)) => {
-                    comps.push(Component::ParentDir);
-                    for _ in itb {
-                        comps.push(Component::ParentDir);
-                    }
-                    comps.push(a);
-                    comps.extend(ita.by_ref());
-                    break;
-                }
-            }
-        }
-        Some(comps.iter().map(|c| c.as_os_str()).collect())
-    }
-}
-
-pub struct Module {
-    name: Option<String>,
-    variables: HashMap<String, Value>,
-}
-
-impl Module {
-    pub fn new(name: Option<String>) -> Module {
-        Module {
-            name,
-            variables: HashMap::new(),
-        }
-    }
-
-    pub fn name(&self, base: &str) -> String {
-        self.name.clone().unwrap_or(Path::new(base).file_name().unwrap().to_str().unwrap().to_string())
-    }
-}
-
-impl GcTrace for Module {
-    fn size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-
-    fn trace(&self, _gc: &mut crate::gc::Gc) {}
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
 }
 
 impl VM {
@@ -111,7 +36,7 @@ impl VM {
         }
     }
 
-    pub fn compile(&mut self, name: Option<String>, source: &str) -> Result<Function, ()> {
+    pub fn compile(&mut self, name: String, source: &str) -> Result<Function, ()> {
         let module = if let Some(module) = self.modules.get(&name) {
             module.clone()
         } else {
@@ -119,19 +44,18 @@ impl VM {
             self.modules.insert(name, module);
             module
         };
+        self.init_globals(module.clone());
         compile(&source, module)
     }
 
     pub fn interpret(&mut self, function: Function) {
         let closure = Value::Closure(function, Vec::new());
-        self.init_globals();
         self.push(closure.clone());
         self.call_value(closure, 0);
         self.run();
     }
 
-    fn init_globals(&mut self) {
-        let module = self.modules.get_mut(&None).unwrap().clone();
+    fn init_globals(&mut self, module: GcRef<Module>) {
         let globals = &mut self.deref_mut(module).variables;
         globals.insert("readln".to_string(), Value::NativeFunction(make_readln()));
         globals.insert("number".to_string(), Value::NativeFunction(make_number()));
@@ -309,7 +233,8 @@ impl VM {
                 }
                 Instruction::ImportModule(index) => {
                     let name = self.read_string(index);
-                    let module = self.import_module(name);
+                    let import_name = self.module().name.clone();
+                    let module = self.import_module(&import_name, &name);
                     self.last_module = Some(module);
                 }
                 Instruction::ImportVariable(index) => {
@@ -318,7 +243,7 @@ impl VM {
                     if let Some(value) = module.variables.get(&name) {
                         self.stack.push(value.clone());
                     } else {
-                        self.error(format!("Could not find a variable named '{}' in module '{}'.", name, module.name(&self.base)));
+                        self.error(format!("Could not find a variable named '{}' in module '{}'.", name, module.name));
                     }
                 }
                 Instruction::Method(index) => self.define_method(index),
@@ -331,30 +256,27 @@ impl VM {
         self.deref(module)
     }
 
-    fn import_module(&mut self, name: String) -> Module {
-        // FIXME: Fix circular imports (For example using a module map)
-        // Append the module name to the path
-        let file = Path::new(&self.module().name.clone().unwrap_or(self.base.clone())).with_file_name(name.clone()).canonicalize().unwrap();
-        let relative = path_relative_from(&file, Path::new(&self.base).parent().unwrap()).unwrap();
-        let name = relative.to_str().unwrap().to_string();
-        let source = if let Ok(source) = std::fs::read_to_string(&file) {
-            source
-        } else {
-            self.error(format!("Could not read file '{}'", name));
-        };
+    fn import_module(self: &mut VM, importer_name: &str, unresolved_name: &str) -> Module {
+        let name = resolve_module(&self, importer_name, unresolved_name);
 
-        let program = if let Ok(program) = self.compile(Some(name.clone()), &source) {
-            program
-        } else {
-            self.error(format!("Could not compile module '{}'", name));
-        };
+        // If the module is already loaded, we don't need to do anything.
+        if let Some(m) = self.modules.get(&name) {
+            let module = self.gc.deref(m.clone());
+            return module.clone();
+        }
+
+        let result = read_module(&self, &name)
+            .ok_or_else(|| self.error(format!("Could not load module '{}'.", name))).unwrap();
+
+        let program = self.compile(name.clone(), &result.source)
+            .unwrap_or_else(|_| self.error(format!("Could not compile module '{}'.", name)));
 
         let frames = mem::replace(&mut self.frames, vec![]);
         let stack = mem::replace(&mut self.stack, vec![]);
         self.interpret(program.clone());
         let module = Module {
-            name: Some(name),
-            variables: self.deref(program.module).variables.clone()
+            name,
+            variables: self.gc.deref(program.module).variables.clone()
         };
         self.frames = frames;
         self.stack = stack;
@@ -700,7 +622,7 @@ impl VM {
             let function = frame.function.clone();
             let chunk = function.chunk.clone();
             let line = chunk.find_line(frame.ip).0;
-            eprintln!("[line {}] in {}() {}", line, function.name, self.deref(function.module).name(&self.base));
+            eprintln!("[line {}] in {}() {}", line, function.name, self.deref(function.module).name);
         }
         eprintln!("Error: {}", message);
         std::process::exit(1);

@@ -10,6 +10,7 @@ pub mod native_functions;
 pub mod class;
 pub mod instance;
 pub mod gc;
+mod module;
 
 #[cfg(test)]
 mod tests {
